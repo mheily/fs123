@@ -505,6 +505,7 @@ peer_handler_t::p(req::up req, uint64_t etag64, istream&) try {
     // HHTRSUM
     return p_reply(move(req), reply123.content, reply123.etag64, cc);
  }catch(std::exception& e){
-    complain(e, "Exception thrown by distrib_cache_backend::peer_handler::p.  Client will see 500 and will discourage others from connecting to us");
-    exception_reply(move(req), e);
+    complain(e, "Exception thrown by distrib_cache_backend::peer_handler::p.");
+    // don't pass 'e' to exception_reply.  It will just issue the same complaint again, to no useful purpose.
+    exception_reply(move(req), http_exception(500, "distrib_cache_backend::peer_handler::p:  Client will see 500 and will discourage others from connecting to us."));
  }
