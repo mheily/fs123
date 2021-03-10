@@ -349,10 +349,7 @@ req::maybe_call_logger(int status) {
     // libevent called getpeername when the connection was established,
     // so there's not much point in eliding the call to evhttp_connection_get_peer.
     // Similarly for get_method and get_uri.  
-    char *remote;
-    uint16_t port;
-    auto evcon = evhttp_request_get_connection(evhr);
-    evhttp_connection_get_peer(evcon, &remote, &port);
+    auto [remote, port] = get_peer();
     auto evmethod = evhttp_request_get_method(evhr);
     const char *evuri = evhttp_request_get_uri(evhr);
     auto length = evbuffer_get_length(evhttp_request_get_output_buffer(evhr));
@@ -382,7 +379,7 @@ req::maybe_call_logger(int status) {
     default:  server_stats.reply_others++; break;
     }
     try{
-        svr.handler.logger(remote, evmethod, evuri, status, length, date);
+        svr.handler.logger(remote.c_str(), evmethod, evuri, status, length, date);
     }catch(std::exception& e){
         complain(e, "exception thrown by logger handler");
     }
@@ -1037,8 +1034,6 @@ void req::add_header(const std::string& name, const std::string& value){
 
 #if __cpp_lib_optional
 std::optional<std::string> req::get_header(const std::string& name){
-    if(function != "p")
-        httpthrow(500, "handler called get_header while handling " + std::string(function) + " request");
     auto inheaders = evhttp_request_get_input_headers(evhr);
     if(!inheaders)
         httpthrow(500, "evhttp_request_get_input_headers returned NULL");
@@ -1052,8 +1047,6 @@ std::optional<std::string> req::get_header(const std::string& name){
 
 const char* req::get_header_ntcs(const std::string& name)
 {
-    if(function != "p")
-        httpthrow(500, "handler called get_header while handling " + std::string(function) + " request");
     auto inheaders = evhttp_request_get_input_headers(evhr);
     if(!inheaders)
         httpthrow(500, "evhttp_request_get_input_headers returned NULL");
@@ -1132,6 +1125,17 @@ void req::p_reply(const std::string& body, uint64_t etag64, const std::string& c
         copy_to_pbuf(body);
         common_reply200(cc, etag64, nullptr); // if fs123-errno is needed, the handler should have done add_header.
  }catch(std::exception& e) { exception_reply(e); }
+
+std::pair<std::string, uint16_t>
+req::get_peer() const {
+        char *remote = nullptr;
+        uint16_t port;
+        auto evcon = evhttp_request_get_connection(evhr);
+        evhttp_connection_get_peer(evcon, &remote, &port);
+        if(remote == nullptr)
+            throw se(EINVAL, "evhttp_connection_get_peer failed.  Is that even possible?");
+        return {remote, port};
+}
 
 void server::add_sig_handler(int sig, std::function<void(int, void*)> cb, void* arg){
     if(!ebac)

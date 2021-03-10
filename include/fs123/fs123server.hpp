@@ -318,8 +318,9 @@ struct req{
 #else
     bool add_dirent(const ::dirent& de, uint64_t esc, long d_off);
 #endif
-    // Methods that may only be called from within a p() handler:
+    // Method that may only be called from within a p() handler:
     void add_header(const std::string& name, const std::string& value);
+
 #if __cpp_lib_optional
     std::optional<std::string> get_header(const std::string& name);
 #endif
@@ -328,6 +329,8 @@ struct req{
     // has the same lifetime as *this, or a NULL pointer if the header
     // name is not present.
     const char* get_header_ntcs(const std::string& name);
+
+    std::pair<std::string, uint16_t> get_peer() const;
 
     ~req();
     friend server; // so it can access http_cb
