@@ -239,10 +239,7 @@
 #include <list>
 #include <cstdint>
 #include <memory>
-#if __has_include(<optional>)
-// maintain gcc6 compatibility, even though it's missing <optional>.
 #include <optional>
-#endif
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <dirent.h>
@@ -321,15 +318,7 @@ struct req{
     // Method that may only be called from within a p() handler:
     void add_header(const std::string& name, const std::string& value);
 
-#if __cpp_lib_optional
     std::optional<std::string> get_header(const std::string& name);
-#endif
-    // get_header is preferred, but alternatively, get_header_ntcs
-    // returns a pointer to a NULL-terminated character string that
-    // has the same lifetime as *this, or a NULL pointer if the header
-    // name is not present.
-    const char* get_header_ntcs(const std::string& name);
-
     std::pair<std::string, uint16_t> get_peer() const;
 
     ~req();
