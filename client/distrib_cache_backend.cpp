@@ -231,10 +231,10 @@ distrib_cache_backend::report_stats(std::ostream& os){
     return os;
 }
 
-distrib_cache_backend::~distrib_cache_backend(){
+distrib_cache_backend::~distrib_cache_backend() try {
     // Tell the world we're closing up shop
     DIAG(_shutdown, "~distrib_cache_backend: discourage_peer(self)");
-    discourage_peer(server_url);
+    discourage_peer_noexcept(server_url);
     // Shut down the server
     DIAG(_shutdown, "~distrib_cache_backend: myserver->stop");
     myserver->stop();
@@ -264,15 +264,14 @@ distrib_cache_backend::~distrib_cache_backend(){
         DIAG(_shutdown, "~distrib_cache_backend: iterate loop udp_future.wait_for(" << ins(how_long) << ")");
         //std::terminate();
     }
-    try{
-        DIAG(_shutdown, "~distrib_cache_backend: udp_future.get()");
-        udp_future.get();
-        complain(LOG_NOTICE, "distrib_cache_backend: udp_listener exited cleanly");
-    }catch(exception& e){
-        complain(e, "distrib_cache_backend: udp_listener exited on an exception.  Something is probably wrong but carry on and hope for the best.");
-    }
+    DIAG(_shutdown, "~distrib_cache_backend: udp_future.get()");
+    udp_future.get();
+    complain(LOG_NOTICE, "distrib_cache_backend: udp_listener exited cleanly");
     DIAG(_shutdown, "~distrib_cache_backend:  done!");
-}
+ }catch(exception& e){
+        complain(e, "distrib_cache_backend:~distrib_cache_backend threw an exception.  Something is probably wrong but carry on and hope for the best.");
+        //std::terminate();  // is this another case where terminate is the lesser of evils ?
+ }
 
 void
 distrib_cache_backend::initialize_reflector_addr(const std::string& reflector) /* private */ try {
@@ -324,7 +323,7 @@ distrib_cache_backend::refresh(const req123& req, reply123* reply) /*override*/ 
         return p->be->refresh(myreq, reply);
     }catch(exception& e){
         complain(LOG_WARNING, e, "peer->be->refresh threw.  Discouraging future attempts to use that peer: " + p->url);
-        discourage_peer(p->url);
+        discourage_peer_noexcept(p->url);
         discouraged_peer(p->url);
         return upstream_backend->refresh(req, reply);
     }
@@ -356,7 +355,7 @@ distrib_cache_backend::suggested_peer(const string& peerurl){
         DIAG(_distrib_cache, "suggested_peer: new url: " + peerurl + " uuid: " + rep.content);
     }catch(exception& e){
         DIAGf(_distrib_cache, "Failed to connect with suggested peer: %s, calling discourage_peer", peerurl.c_str());
-        return discourage_peer(peerurl);
+        return discourage_peer_noexcept(peerurl);
     }
     // More checks??  E.g., check that /p/a should give us something that is
     // consistent with our own notion of the root's attributes?
@@ -402,6 +401,16 @@ distrib_cache_backend::discourage_peer(const string& peer_url) const{
     distrib_cache_message::send(udp_fd, reflector_addr, &parts[0], &parts[3]);
     distrib_cache_stats.distc_discourages_sent++;
 }
+
+// It's frequently inconvenient for discourage_peer to throw (e.g.,
+// it's called from a destructor, or an exception handler).  Call
+// discourage_peer_noexcept instead.
+void
+distrib_cache_backend::discourage_peer_noexcept(const string& peer_url) const noexcept try {
+    discourage_peer(peer_url);
+ }catch(std::exception& e){
+    complain(e, "discourage_peer_noexcept(" + peer_url + "): exception caught and ignored:");
+ }
 
 void
 distrib_cache_backend::udp_listener() try {

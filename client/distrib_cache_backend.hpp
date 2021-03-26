@@ -355,6 +355,7 @@ struct distrib_cache_backend : public backend123{
     // we are making the suggestion.
     void suggest_peer(const std::string& peerurl) const;
     void discourage_peer(const std::string& peerurl) const;
+    void discourage_peer_noexcept(const std::string& peerurl) const noexcept;
     // *this is the object of suggested_peer and discouraged_per.  I.e.,
     // the suggestion is being made to us.
     void suggested_peer(const std::string& peerurl);
