@@ -24,3 +24,5 @@ salmonj/
 Portfile
 ut_content_codec.secret
 *.deps
+# test output directories
+fs123.*/
