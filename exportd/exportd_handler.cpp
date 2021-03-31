@@ -523,10 +523,13 @@ void exportd_global_setup(const exportd_options& exportd_opts){
         throw se(EINVAL, "You must specify a --pidfile=XXX if you --daemonize");
     
     if(exportd_opts.daemonize){
-        // We'll do the chdir ourselves after chroot.
-        // and we'll keep stdout open for diagnostics.
+        // We'll do the chdir ourselves after chroot, but allow
+        // daemon(3) to dup2 /dev/null onto fd=0, 1 and 2.
+        // Otherwise, our caller (e.g. sshd) might not realize that
+        // we've disconnected.  As a result, sending logs or diags to
+        // %stdout or %stderr is unproductive with with --daemonize.
 #ifndef __APPLE__
-        sew::daemon(true/*nochdir*/, true/*noclose*/);
+        sew::daemon(true/*nochdir*/, false/*noclose*/);
 #else
 	throw se(EINVAL, "MacOS deprecates daemon().  Run in foreground and use launchd");
 #endif
