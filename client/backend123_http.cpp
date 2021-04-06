@@ -896,6 +896,7 @@ protected:
             wrap_curl_easy_getinfo(curl, CURLINFO_SIZE_DOWNLOAD, &bytes_read);
             const char *url = nullptr;
             wrap_curl_easy_getinfo(curl, CURLINFO_EFFECTIVE_URL, &url);
+#if 0       // Why bother?  We're probably write a fixed-size reclen to a %csb anyway
             // Ignore everything after the /fs123 sigil.
             std::string baseurl;
             if(url){
@@ -907,6 +908,7 @@ protected:
             }else{
                 baseurl = "<unknown>";
             }
+#endif
             const char *ip = "0.0.0.0";
             wrap_curl_easy_getinfo(curl, CURLINFO_PRIMARY_IP, &ip);
             long code = 599;
@@ -919,7 +921,7 @@ protected:
                         bytes_read,
                         (long)(t*1.e6),
                         ip,
-                        baseurl.c_str()));
+                        url /*baseurl.c_str()*/));
         }
     }
 
