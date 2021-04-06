@@ -15,7 +15,7 @@ static constexpr uint64_t etag = 31415;
 
 struct bench_handler: public fs123p7::handler_base{
     // N.B.  The cc could be a constructor-argument...
-    std::string cc = "max-age:10,stale-while-revalidate=20,stale-if-error=60";
+    std::string cc = "max-age=10,stale-while-revalidate=20,stale-if-error=60";
     bool strictly_synchronous() override { return true; }
     void a(fs123p7::req::up reqp) override {
         struct stat sb = {}; // all zeros!
