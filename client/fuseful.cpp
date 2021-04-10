@@ -694,9 +694,10 @@ int fuseful_main_ll(fuse_args *args, const fuse_lowlevel_ops& llops,
 	    g_mount_dotdot_ino = 1;
 	}
         
+        errno = 0; // does fuse_mount set errno?  It's not documented, but we can hope.
         g_channel = fuse_mount(g_mountpoint.c_str(), args);
         if(g_channel == nullptr)
-            throw se(EINVAL, fmt("fuse_mount(mountpoint=%s, args) failed.  No channel.  Bye.", g_mountpoint.c_str())); 
+            throw se(fmt("fuse_mount(mountpoint=%s, args) failed.  No channel.  Bye.", g_mountpoint.c_str())); 
         fprintf(stderr, "mountpoint=%s, multithreaded=%d, foreground=%d\n", g_mountpoint.c_str(), multithreaded, foreground);
 
         // fuse_daemonize will do chdir("/") which makes sense for a
