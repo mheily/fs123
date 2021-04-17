@@ -48,15 +48,16 @@ inline bool startswith(str_view s, str_view pfx){
 
 inline str_view sv_rstrip(str_view s){
     auto i = s.find_last_not_of(" \r\n\t\f\v");
-    if (i == s.npos)
-        return "";
+    //if (i == s.npos) 
+    //    return {};
+    static_assert(s.npos+1 == 0, "Uh oh.  I thought npos == -1");
     return s.substr(0, i+1);
 }
 
 inline str_view sv_lstrip(str_view s){
     auto i = s.find_first_not_of(" \r\n\t\f\v");
-    if (i == s.npos)
-        return "";
+    if (i == s.npos) // necessary: s.substr(i) throws if i>s.size()
+        i = s.size();
     return s.substr(i);
 }
 
