@@ -44,6 +44,7 @@ int complain(){
         " AddPeer\n"
         " RemovePeer\n"
         " InvalidateInode\n"
+        " MaintenanceInterval\n"
         ;
     return 1;
 }
@@ -142,6 +143,8 @@ int app_ctl(int argc, char **argv) try {
         ioc = REMOVE_PEER_IOC;
     }else if(cmd == "InvalidateInode"){
         ioc = INVALIDATE_INODE_IOC;
+    }else if(cmd == "MaintenanceInterval"){
+        ioc = MAINTENANCE_INTERVAL_IOC;
     }else{
         fprintf(stderr, "Unrecognized command: %s\n", cmd.c_str());
         return complain();

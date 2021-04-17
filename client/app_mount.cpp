@@ -903,13 +903,14 @@ void regular_maintenance(){
 #endif
 }
 
-auto once_per_minute_maintenance() {
+auto regular_maintenance_noexcept() {
     try{
         regular_maintenance();
     }catch(std::exception& e){
-        complain(e, "once_per_minute_maintenance:  caught and ignored exception.");
+        complain(e, "regular_maintenance_noexcept:  caught and ignored exception.");
     }
-    return std::chrono::minutes(1);
+    unsigned secs = std::min(1u, volatiles->maintenance_interval.load());
+    return std::chrono::seconds(secs);
  }
 
 void fs123_init(void *, struct fuse_conn_info *conn_info) try {
@@ -1090,7 +1091,7 @@ void fs123_init(void *, struct fuse_conn_info *conn_info) try {
     // fs123_destroy) so that the maintenance function can safely
     // assume that all subsystems (volatiles, backends, secret
     // managers, DNS caches, etc.) are live whenever it runs.
-    maintenance_task = std::make_unique<core123::periodic>(once_per_minute_maintenance);
+    maintenance_task = std::make_unique<core123::periodic>(regular_maintenance_noexcept);
 }catch(std::exception& e){
     complain(e, "fs123_init caught exception.  Are we misconfigured?  Exception: ");
     // Something is wrong.  We can't continue, but recovery tricky.
@@ -1994,6 +1995,10 @@ void fs123_ioctl(fuse_req_t req, fuse_ino_t ino, int cmd, void *arg, struct fuse
     case RETRY_SATURATE_IOC:
         VOLATILE_IOCTL(retry_saturate);
         return;
+    case MAINTENANCE_INTERVAL_IOC:
+        VOLATILE_IOCTL(maintenance_interval);
+        maintenance_task->trigger(); // trigger it now, in case the new interval is shorter
+        return;
     case IGNORE_ESTALE_MISMATCH_IOC:
         VOLATILE_IOCTL(ignore_estale_mismatch);
         return;
@@ -2272,6 +2277,7 @@ std::ostream& report_config(std::ostream& os){
        << "Fs123RetryTimeout: " << volatiles->retry_timeout << "\n"
        << "Fs123RetryInitialMillis: " << volatiles->retry_initial_millis << "\n"
        << "Fs123RetrySaturate: " << volatiles->retry_saturate << "\n"
+       << "Fs123MaintenanceInterval: " << volatiles->maintenance_interval << "\n"
        << "Fs123IgnoreEstaleMismatch: " << volatiles->ignore_estale_mismatch << "\n"
        << "Fs123SupportXattr: " << support_xattr << "\n"
        << "Fs123ConnectTimeout: " << volatiles->connect_timeout << "\n"
@@ -2426,6 +2432,8 @@ try {
                                     "Fs123RetryTimeout=",
                                     "Fs123RetryInitialMillis=",
                                     "Fs123RetrySaturate=",
+                                    // Maintenance configuration
+                                    "Fs123MaintenanceInterval=",
                                     // In backend123
                                     "Fs123SO_RCVBUF=",
                                     "Fs123SSLNoVerifyPeer=",

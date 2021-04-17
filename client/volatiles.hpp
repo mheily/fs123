@@ -50,6 +50,9 @@ struct volatiles_t{
     // Timeouts are increased when the load average-per-core exceeds this in backend_http.cpp
     std::atomic<float> load_timeout_factor{core123::envto<float>("Fs123LoadTimeoutFactor", 1.5f)};
 
+    // How frequently do we run regular_maintenance.
+    std::atomic<unsigned> maintenance_interval{core123::envto<unsigned>("Fs123MaintenanceInterval", 60)};
+    
     // things we measure from time to time about our
     // current "environment":
     const static unsigned hw_concurrency; // = std::thread::hardware_concurrency()
