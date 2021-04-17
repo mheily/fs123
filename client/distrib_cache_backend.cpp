@@ -224,9 +224,14 @@ distrib_cache_backend::report_stats(std::ostream& os){
     peer_map.forall_peers([&os,this](const pair<string, peer::sp>& p){
                               if(p.second->be == upstream_backend)
                                   return;
-                              os << "BEGIN_peer: " << p.first << "\n";
-                              p.second->be->report_stats(os);
-                              os << "END_peer: " << p.first << "\n";
+                              os << "BEGIN_peer_" << p.first << ":\n";
+                              // Add two spaces to each line so that this looks
+                              // like a 'block' if we parse .fs123_statistics as
+                              // yaml.
+                              core123::osvstream osvs;
+                              p.second->be->report_stats(osvs);
+                              for(auto line : svsplit_exact(sv_rstrip(osvs.sv()), "\n"))
+                                  os << "  " << line << "\n";
                           });
     return os;
 }
