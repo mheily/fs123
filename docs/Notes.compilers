@@ -1,7 +1,7 @@
 In Jan 2021, we are finally dropping "support" for gcc-6.  I.e.,
 compiler and library features that are not present in gcc-6 will
 be used unconditionally in the code.  Compiling fs123p7 and
-core123 will require at least gcc-8, clang-7 or icpc-19.
+core123 will require at least gcc-7, clang-7 or icpc-19.
 
 We will no longer develop #if-#else workarounds for the following
 C++-17 feature-test macros (or any others in the intersection of
@@ -55,9 +55,22 @@ require any "third-party" packages on any current Debian, Ubuntu,
 Alpine or CentOS platforms.  The choice between gcc-7 and gcc-8 comes
 down to whether we can build on Bionic with an "out of the box"
 build-essential or a distro-provided gcc-8.  Lowering our requirement
-to gcc-7 has reduces "friction" on Bionic.  But if we discover some
-useful feature introduced in gcc-8, we shouldn't hesitate to require
-it.
+to gcc-7 reduces "friction" on Bionic.  But if we discover some useful
+feature introduced later than gcc-8 and clang-7, we shouldn't hesitate
+to require it.
+
+What are we leaving out?
+
+I.e., what would be nice-to-have, but isn't available in gcc-7 and
+clang-7?
+
+- __cpp_designated_initializers (first supported in gcc8, and clang10).
+
+  This would rule out Debian Stretch (which, to be fair, is already
+  EOL) and would require gcc-8 (available, but not in build-essential)
+  on Ubuntu Bionic.  Designated initializers *appear* to work in
+  icpc-17.
+
 
 What about icc?
 
