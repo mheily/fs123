@@ -147,8 +147,17 @@ struct log_channel{
             // autonewline with writev
             struct iovec iov[2] = {{const_cast<char*>(sv.data()), sv.size()},
                                    {const_cast<char*>("\n"), 1}};
-            int iovcnt = sv[sv.size()-1] == '\n' ? 1 : 2;
-            sew::writev(dest_fd, iov, iovcnt);
+            int iovcnt = 1;
+            ssize_t wbytes =  sv.size();
+            if( sv[sv.size()-1] != '\n' ){
+                iovcnt = 2;
+                wbytes += 1;
+            }
+            // Should we even be using sew:: and throw here?  What
+            // do we expect the caller to do?  Maybe it would be
+            // better to be "best effort" and nothrow?
+            if( sew::writev(dest_fd, iov, iovcnt) != wbytes )
+                throw se(ENOSPC, "log_channel::send:  short write");
         }
         // else, quietly do nothing 
     }

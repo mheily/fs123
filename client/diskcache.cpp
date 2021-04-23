@@ -906,13 +906,17 @@ diskcache::serialize(const reply123& r, const std::string& path, const std::stri
     }
     try{
         struct iovec iov[6];
+        ssize_t nwrite = 0;
         iov[0].iov_base = (char*)&r + reply123_pod_begin;
         iov[0].iov_len = reply123_pod_length;
+        nwrite += iov[0].iov_len;
         size_t content_len = r.content.size();
         iov[1].iov_base = &content_len;
         iov[1].iov_len = sizeof(content_len);
+        nwrite += iov[1].iov_len;
         iov[2].iov_base = const_cast<char*>(r.content.data());
         iov[2].iov_len = content_len;
+        nwrite += iov[2].iov_len;
 
         // append the url and its length and the value of 'magic' to
         // the end of the file.  This should be enough for an
@@ -921,10 +925,13 @@ diskcache::serialize(const reply123& r, const std::string& path, const std::stri
         int32_t url_len = url.size();
         iov[3].iov_base = const_cast<char*>(url.data());
         iov[3].iov_len = url_len;
+        nwrite += iov[3].iov_len;
         iov[4].iov_base = &url_len;
         iov[4].iov_len = sizeof(url_len);
+        nwrite += iov[4].iov_len;
         iov[5].iov_base = const_cast<int*>(&r.magic);
         iov[5].iov_len = sizeof(r.magic);
+        nwrite += iov[5].iov_len;
 #if 1   // N.B.  We believe r.content is now managed correctly, even
         // if std::string is copy-on-write.  There is an O(1)
         // check in do_serialize to confirm that.  So the
@@ -937,7 +944,9 @@ diskcache::serialize(const reply123& r, const std::string& path, const std::stri
                                  ));
         }
 #endif
-        size_t wrote = sew::writev(fd, iov, 6);
+        ssize_t wrote = sew::writev(fd, iov, 6);
+        if(wrote != nwrite)
+            throw se(ENOSPC, fmt("Short write: %zd of %zd.  ENOSPC is just a guess.", wrote, nwrite));
         stats.dc_serializes++;
         stats.dc_serialize_bytes += wrote;
         // see comments above about O_EXCL|O_CREAT.  We have exclusive
