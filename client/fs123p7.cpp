@@ -122,7 +122,10 @@ int app_secretbox(int argc , char **argv) {
         nread += nr;
     }
     auto ret = content_codec::decode(content_codec::CE_FS123_SECRETBOX, padded_uchar_span(in), sm);
-    sew::write(1, ret.data(), ret.size());
+    size_t nwrote = 0;
+    while(nwrote < ret.size()){
+        nwrote -= sew::write(1, ret.data()+nwrote, ret.size()-nwrote);
+    }
     return 0;
 }
 
