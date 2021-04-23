@@ -55,7 +55,15 @@ struct url_info{
 };
 
 struct backend123_http : public backend123 {
-    backend123_http(const std::string& _baseurl, const std::string& _accept_encodings, volatiles_t& volatiles);
+    // The 'flavor' is a constructor argument that tells us what
+    // flavor of backend to configure.  In practice, this means that
+    // we read and write different "volatile" configuration/runtime
+    // parameters, e.g., volatiles.connect_timeout for a "primary"
+    // flavor vs volatiles.peer_connect_timeout for a
+    // "distrib_cache" flavor.
+    enum flavor_e {primary, distrib_cache};
+                   
+    backend123_http(const std::string& _baseurl, const std::string& _accept_encodings, volatiles_t& volatiles, flavor_e flavor = primary);
     void add_fallback_baseurl(const std::string& s){
         baseurls.emplace_back(s);
     }
@@ -82,6 +90,10 @@ private:
     bool using_https;
     std::string accept_encoding;
     volatiles_t& vols;
+    flavor_e flavor;
+    // some flavor-dependendent pointers into vols
+    std::atomic<long> *connect_timeout;
+    std::atomic<long> *transfer_timeout;
     core123::addrinfo_cache aicache;
 
 #define STATS_STRUCT_TYPENAME backend123_http_statistics_t

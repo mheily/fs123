@@ -1022,8 +1022,8 @@ void backend123_http::setoptions(CURL *curl) const{
         curl_easy_setopt(curl, CURLOPT_NETRC, CURL_NETRC_OPTIONAL);
     }
 
-    long cto = vols.connect_timeout.load();
-    long tto = vols.transfer_timeout.load();
+    long cto = connect_timeout->load();
+    long tto = transfer_timeout->load();
     // If the load_timeout_factor config option is greater than zero
     // (i.e., enabled), and the current load-average per-cpu is
     // greater than the load_timeout_factor, then multiply the connect
@@ -1080,12 +1080,13 @@ void backend123_http::setoptions(CURL *curl) const{
     }
 }
 
-backend123_http::backend123_http(const std::string& _baseurl, const std::string& _accept_encoding, volatiles_t& _vols)
+backend123_http::backend123_http(const std::string& _baseurl, const std::string& _accept_encoding, volatiles_t& _vols, flavor_e _flavor)
     : backend123(),
       baseurls{}, content_reserve_size(129 * 1024), // 129k leaves room for the 'validator' in a 128k request
       using_https(startswith(_baseurl, "https://")),
       accept_encoding(_accept_encoding),
-      vols(_vols)
+      vols(_vols),
+      flavor(_flavor)
 {
     baseurls.emplace_back(_baseurl);
     netrcfile = envto<std::string>("Fs123NetrcFile", "");
@@ -1096,15 +1097,26 @@ backend123_http::backend123_http(const std::string& _baseurl, const std::string&
     }
 #endif
 
+    switch(flavor){
+    case primary:
+        connect_timeout = &vols.connect_timeout;
+        transfer_timeout = &vols.transfer_timeout;
+        break;
+    case distrib_cache:
+        connect_timeout = &vols.peer_connect_timeout;
+        transfer_timeout = &vols.peer_transfer_timeout;
+        break;
+    }
+
     // libcurl defaults to a 300 sec connection timeout.  That's
     // extremely painful when the server is down.  Unfortunately,
     // there are no sub-second settings and a zero value is
     // interpreted as a request to restore the default (300).
     // When we had it set to 1s, we saw occasional timeouts
     // even on a LAN.
-    if(vols.connect_timeout.load() == 0){
-        complain(LOG_WARNING, "Fs123ConnectTimeout was specified as 0.  Timeout set to the shortest allowed value (1 sec) instead.");
-        vols.connect_timeout = 1;
+    if(connect_timeout->load() == 0){
+        complain(LOG_WARNING, "Fs123[Peer]ConnectTimeout was specified as 0.  Timeout set to the shortest allowed value (1 sec) instead.");
+        connect_timeout->store(1);
     }
     // The transfer_timeout defaults to 40 seconds.  The typical
     // 'Fs123Chunk' is 128kByte or 1Mbit.  So 5 seconds should be
@@ -1114,7 +1126,7 @@ backend123_http::backend123_http(const std::string& _baseurl, const std::string&
     // we saw some timeouts on our 'guest' wireless network when the
     // timeout was 2 seconds.  The timeout can be adjusted with an
     // ioctl.
-    if(vols.transfer_timeout.load() ==0 ){
+    if(transfer_timeout->load() ==0 ){
         complain(LOG_WARNING, "libcurl CURLOPT_TIMEOUT will be zero, which can cause libcurl to hang indefinitely.  If too many fuse callbacks hang, all fuse activity (not just this particular fs123) may become unresponsive");
     }
 }

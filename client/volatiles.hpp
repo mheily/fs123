@@ -25,6 +25,12 @@ struct volatiles_t{
     // used in backend_http.cpp
     std::atomic<long> connect_timeout{core123::envto<long>("Fs123ConnectTimeout", 20L)};
     std::atomic<long> transfer_timeout{core123::envto<long>("Fs123TransferTimeout", 40L)};
+    // the defaults for the distrib_cache timeouts are the same as for the 'primary' timeouts.
+    // That means the new distrib_cache timeouts won't change production behavior.  But
+    // it's probably not the best choice of default.  So expect to change them to 1L
+    // after we get some experience.
+    std::atomic<long> peer_connect_timeout{core123::envto<long>("Fs123PeerConnectTimeout", connect_timeout.load())};
+    std::atomic<long> peer_transfer_timeout{core123::envto<long>("Fs123PeerTransferTimeout", transfer_timeout.load())};
     std::atomic<long> http_maxredirects{core123::envto<long>("Fs123HttpMaxRedirects", 2)};
     std::atomic<bool> curl_handles_redirects{core123::envto<bool>("Fs123CurlHandlesRedirects", true)};
     std::atomic<bool> namecache{core123::envto<bool>("Fs123NameCache", true)};

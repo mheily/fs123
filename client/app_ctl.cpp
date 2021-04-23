@@ -19,6 +19,8 @@ int complain(){
         " DiagOff\n"
         " ConnectTimeout\n"
         " TransferTimeout\n"
+        " PeerConnectTimeout\n"
+        " PeerTransferTimeout\n"
         " LoadTimeoutFactor\n"
         " NameCache\n"
         " Mlockall\n"
@@ -93,6 +95,10 @@ int app_ctl(int argc, char **argv) try {
         ioc = CONNECT_TIMEOUT_IOC;
     }else if(cmd == "TransferTimeout"){
         ioc = TRANSFER_TIMEOUT_IOC;
+    }else if(cmd == "PeerConnectTimeout"){
+        ioc = PEER_CONNECT_TIMEOUT_IOC;
+    }else if(cmd == "PeerTransferTimeout"){
+        ioc = PEER_TRANSFER_TIMEOUT_IOC;
     }else if(cmd == "LoadTimeoutFactor"){
         ioc = LOAD_TIMEOUT_FACTOR_IOC;
     }else if(cmd == "NameCache"){

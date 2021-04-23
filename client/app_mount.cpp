@@ -1941,6 +1941,12 @@ void fs123_ioctl(fuse_req_t req, fuse_ino_t ino, int cmd, void *arg, struct fuse
     case TRANSFER_TIMEOUT_IOC:
         VOLATILE_IOCTL(transfer_timeout);
         return;
+    case PEER_CONNECT_TIMEOUT_IOC:
+        VOLATILE_IOCTL(peer_connect_timeout);
+        return;
+    case PEER_TRANSFER_TIMEOUT_IOC:
+        VOLATILE_IOCTL(peer_transfer_timeout);
+        return;
     case LOAD_TIMEOUT_FACTOR_IOC:
         VOLATILE_IOCTL(load_timeout_factor);
         return;
@@ -2282,6 +2288,8 @@ std::ostream& report_config(std::ostream& os){
        << "Fs123SupportXattr: " << support_xattr << "\n"
        << "Fs123ConnectTimeout: " << volatiles->connect_timeout << "\n"
        << "Fs123TransferTimeout: " << volatiles->transfer_timeout << "\n"
+       << "Fs123PeerConnectTimeout: " << volatiles->peer_connect_timeout << "\n"
+       << "Fs123PeerTransferTimeout: " << volatiles->peer_transfer_timeout << "\n"
        << "Fs123LoadTimeoutFactor: " << volatiles->load_timeout_factor << "\n"
        << "Fs123NameCache: " << volatiles->namecache << "\n"
        << "Fs123Mlockall: " << volatiles->mlockall << "\n"
@@ -2339,6 +2347,8 @@ std::ostream& report_config(std::ostream& os){
         Prt(Fs123SSLNoVerifyHost, "<unset>") // default in backend123_http.cpp
         //Prt(Fs123TransferTimeout)
         //Prt(Fs123ConnectTimeout)
+        //Prt(Fs123PeerTransferTimeout)
+        //Prt(Fs123PeerConnectTimeout)
         //Prt(Fs123LoadTimeoutFactor)
         //Prt(Fs123NameCache)
         //Prt(Fs123Disconnected)
@@ -2440,6 +2450,8 @@ try {
                                     "Fs123SSLNoVerifyHost=",
                                     "Fs123TransferTimeout=",
                                     "Fs123ConnectTimeout=",
+                                    "Fs123PeerTransferTimeout=",
+                                    "Fs123PeerConnectTimeout=",
                                     "Fs123LoadTimeoutFactor=",
                                     "Fs123NameCache=",
                                     "Fs123Mlockall=",

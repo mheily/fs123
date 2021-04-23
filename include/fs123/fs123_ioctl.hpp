@@ -40,5 +40,7 @@ struct fs123_ioctl_data{
 #define CURL_HANDLES_REDIRECTS_IOC _IOW(0,128, fs123_ioctl_data)
 #define MLOCKALL_IOC _IOW(0, 129, fs123_ioctl_data)
 #define MAINTENANCE_INTERVAL_IOC _IOW(0, 130, fs123_ioctl_data)
+#define PEER_CONNECT_TIMEOUT_IOC _IOW(0, 131,fs123_ioctl_data)
+#define PEER_TRANSFER_TIMEOUT_IOC _IOW(0, 132,fs123_ioctl_data)
 
 #endif

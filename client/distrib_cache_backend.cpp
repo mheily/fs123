@@ -255,14 +255,14 @@ distrib_cache_backend::~distrib_cache_backend() try {
     // IP_MULTICAST_LOOP isn't enabled (it usually isn't), and it
     // would be unreliable anyway (c.f. the U in UDP).
     //
-    // What if udp_listner is hung?  We can't carry on with the
+    // What if udp_listener is hung?  We can't carry on with the
     // destructor because udp_listener would access free'ed memory if
     // and when it ever wakes up.  "Hung" is tricky, though.  See the
     // comment in udp_listener about suggested_peer.
     //
     // This may be a situation where std::terminate is the right/only
     // answer?
-    chrono::seconds how_long(vols.connect_timeout + vols.transfer_timeout + 10);
+    chrono::seconds how_long(vols.peer_connect_timeout + vols.peer_transfer_timeout + 10);
     DIAG(_shutdown, "~distrib_cache_backend: begin loop on udp_future.wait_for(" << ins(how_long) << ")");
     while(udp_future.wait_for(how_long) == future_status::timeout){
         complain(LOG_CRIT, "~distrib_cache_backend's udp_listner is hung.  You may have to kill -9 this process.");
@@ -351,7 +351,7 @@ distrib_cache_backend::suggested_peer(const string& peerurl){
         // uninterpreted binary data back.  The data *may* have an
         // encoding, but we're oblivious to that, and we don't want
         // another layer of encryption or encoding added.
-        be = make_unique<backend123_http>(add_sigil_version(peerurl), "", vols);
+        be = make_unique<backend123_http>(add_sigil_version(peerurl), "", vols, backend123_http::distrib_cache);
         // Get the uuid, which also checks connectivity.
         req123 req("/p/p/uuid", req123::MAX_STALE_UNSPECIFIED);
         // FIXME?  - time the be->refresh().  If it's slow (whatever
