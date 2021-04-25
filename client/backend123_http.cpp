@@ -13,7 +13,6 @@
 #include <core123/datetimeutils.hpp>
 #include <core123/strutils.hpp>
 #include <core123/svto.hpp>
-#include <core123/envto.hpp>
 #include <curl/curl.h>
 #include <cctype>
 #include <deque>
@@ -442,13 +441,13 @@ struct backend123_http::curl_handler{
                     //   the IP address rather than a hostname in the netrc file.
                     // - Curl uses the hostname in other ways, e.g.,
                     //   for TLS verification.
-                    if(!bep->using_https){
+                    if(!startswith(baseurli.before_hostname, "https:")){
                         burl = baseurli.before_hostname + dotted_decimal + baseurli.after_hostname;
                         headers_sl.append("Host:"+baseurli.hostname);
                         DIAG(_namecache, "replacing " << baseurli.original << " with " << burl << " and Host:" + baseurli.hostname + " header\n");
                     }else{
-                        bep->vols.namecache.store(false);
-                        complain(LOG_WARNING, "libcurl older than 7.35.0 cannot use the namecache with https.  Namecache disabled.  Using libcurl's resolver.");
+                        static std::once_flag flag;
+                        std::call_once(flag, [](){complain(LOG_WARNING, "libcurl older than 7.35.0 cannot use the namecache with https.  Namecache disabled.  Using libcurl's resolver.  This warning is issued only once.");});
                     }
 #endif
                 }else{
@@ -937,7 +936,11 @@ std::ostream& backend123_http::report_stats(std::ostream& os){
         ;
 }
 
-int sockoptcallback(void */*clientp*/, curl_socket_t curlfd, curlsocktype /*purpose*/){
+#ifndef CURL_SOCKOPT_OK // it's not defined in 7.19 on CentOS6
+#define CURL_SOCKOPT_OK 0
+#define CURL_SOCKOPT_ERROR 1
+#endif
+int sockoptcallback(void *_vols, curl_socket_t curlfd, curlsocktype /*purpose*/) try {
     // Setting SO_RCVBUF to 24k seems to work well on the DESRES intranet
     // in 2017, largely mitigating the effects of TCP Incast Collapse
     // from 10Gig servers to 1Gig clients, while not doing significant
@@ -950,11 +953,16 @@ int sockoptcallback(void */*clientp*/, curl_socket_t curlfd, curlsocktype /*purp
     // default is in /proc/sys/net/core/rmem_default.  On one of
     // our Cent7 machines in 2017, it's 212992=208k, which does
     // result in TCP Incast Collapse on our network.
-    int len = envto<int>("Fs123SO_RCVBUF", 24*1024); // 0 means leave system default in place.
+    auto vols =  static_cast<volatiles_t*>(_vols);
+    int len = vols->so_rcvbuf.load();
     if(len)
         sew::setsockopt(curlfd, SOL_SOCKET, SO_RCVBUF, &len, sizeof(len));
-    return 0;
-}
+    return CURL_SOCKOPT_OK;
+ }catch(std::exception& e){
+    complain(e, "sockoptcallback:");
+    // This is a curl callback.  We can't throw.
+    return CURL_SOCKOPT_ERROR;
+ }
 
 void backend123_http::regular_maintenance(){
     if(vols.namecache){
@@ -993,6 +1001,7 @@ void backend123_http::setoptions(CURL *curl) const{
         wrap_curl_easy_setopt(curl, CURLOPT_DEBUGFUNCTION, curl_debug_to_diag_stream);
     }
 
+    curl_easy_setopt(curl, CURLOPT_SOCKOPTDATA, &vols);
     curl_easy_setopt(curl, CURLOPT_SOCKOPTFUNCTION, sockoptcallback);
     // libcurl's SIGALRM handler is buggy.  We've definitely seen the
     // *** longjmp causes uninitialized stack frame *** bugs that it
@@ -1002,7 +1011,7 @@ void backend123_http::setoptions(CURL *curl) const{
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1);
     // Tell curl to start by asking for content_reserve_size bytes.
     curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, content_reserve_size);
-    if(!netrcfile.empty()){
+    if(!vols.netrc_file.empty()){
         // Too slow??  This reparses the netrc file for every request.
         // How much overhead is that??  open/close plus some
         // fgets/strtoks and general string fiddling.  Is it significant
@@ -1018,7 +1027,7 @@ void backend123_http::setoptions(CURL *curl) const{
         // with just a username and password, and parse that once and
         // for all.  It doesn't have to be as "fancy" as netrc.  This
         // would also sidestep the issue with the namecache.
-        curl_easy_setopt(curl, CURLOPT_NETRC_FILE, netrcfile.c_str());
+        curl_easy_setopt(curl, CURLOPT_NETRC_FILE, vols.netrc_file.c_str());
         curl_easy_setopt(curl, CURLOPT_NETRC, CURL_NETRC_OPTIONAL);
     }
 
@@ -1051,49 +1060,44 @@ void backend123_http::setoptions(CURL *curl) const{
         curl_easy_setopt(curl, CURLOPT_MAXREDIRS, maxredirs);
     }
 
-    if(using_https){
-        // Command line options to set '--insecure'??
-        // N.B.  These comments are verbatim from http://curl.haxx.se/libcurl/c/https.html
-        if(!envto<std::string>("Fs123SSLNoVerifyPeer", "").empty()){
-            /*
-             * If you want to connect to a site who isn't using a certificate that is
-             * signed by one of the certs in the CA bundle you have, you can skip the
-             * verification of the server's certificate. This makes the connection
-             * A LOT LESS SECURE.
-             *
-             * If you have a CA cert for the server stored someplace else than in the
-             * default bundle, then the CURLOPT_CAPATH option might come handy for
-             * you.
-             */ 
-            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-        }
-
-        if(!envto<std::string>("Fs123SSLNoVerifyHost", "").empty()){
-            /*
-             * If the site you're connecting to uses a different host name that what
-             * they have mentioned in their server certificate's commonName (or
-             * subjectAltName) fields, libcurl will refuse to connect. You can skip
-             * this check, but this will make the connection less secure.
-             */ 
-            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
-        }
+    // These are equivalent to curl --insecure
+    // N.B.  These comments are verbatim from http://curl.haxx.se/libcurl/c/https.html
+    if(vols.no_verify_peer){
+        /*
+         * If you want to connect to a site who isn't using a certificate that is
+         * signed by one of the certs in the CA bundle you have, you can skip the
+         * verification of the server's certificate. This makes the connection
+         * A LOT LESS SECURE.
+         *
+         * If you have a CA cert for the server stored someplace else than in the
+         * default bundle, then the CURLOPT_CAPATH option might come handy for
+         * you.
+         */ 
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+    }
+    if(vols.no_verify_host){
+        /*
+         * If the site you're connecting to uses a different host name that what
+         * they have mentioned in their server certificate's commonName (or
+         * subjectAltName) fields, libcurl will refuse to connect. You can skip
+         * this check, but this will make the connection less secure.
+         */ 
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
     }
 }
 
 backend123_http::backend123_http(const std::string& _baseurl, const std::string& _accept_encoding, volatiles_t& _vols, flavor_e _flavor)
     : backend123(),
       baseurls{}, content_reserve_size(129 * 1024), // 129k leaves room for the 'validator' in a 128k request
-      using_https(startswith(_baseurl, "https://")),
       accept_encoding(_accept_encoding),
       vols(_vols),
       flavor(_flavor)
 {
     baseurls.emplace_back(_baseurl);
-    netrcfile = envto<std::string>("Fs123NetrcFile", "");
 #ifdef NO_NETRC
-    if(!netrcfile.empty()){
+    if(!vols.netrc_file.empty()){
         complain(LOG_ERR, "http backend compiled with -DNO_NETRC:  Fs123NetrcFile option ignored!");
-        netrcfile = "";
+        vols.netrc_file = std::string{};
     }
 #endif
 

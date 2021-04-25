@@ -22,25 +22,36 @@
 struct volatiles_t{
     // used in multiple backends:
     std::atomic<bool> disconnected{core123::envto<bool>("Fs123Disconnected", false)};
+
     // used in backend_http.cpp
     std::atomic<long> connect_timeout{core123::envto<long>("Fs123ConnectTimeout", 20L)};
     std::atomic<long> transfer_timeout{core123::envto<long>("Fs123TransferTimeout", 40L)};
     // the defaults for the distrib_cache timeouts are the same as for the 'primary' timeouts.
     // That means the new distrib_cache timeouts won't change production behavior.  But
-    // it's probably not the best choice of default.  So expect to change them to 1L
+    // it's probably not the best choice of default.  Consider changing them to 1L
     // after we get some experience.
     std::atomic<long> peer_connect_timeout{core123::envto<long>("Fs123PeerConnectTimeout", connect_timeout.load())};
     std::atomic<long> peer_transfer_timeout{core123::envto<long>("Fs123PeerTransferTimeout", transfer_timeout.load())};
     std::atomic<long> http_maxredirects{core123::envto<long>("Fs123HttpMaxRedirects", 2)};
     std::atomic<bool> curl_handles_redirects{core123::envto<bool>("Fs123CurlHandlesRedirects", true)};
     std::atomic<bool> namecache{core123::envto<bool>("Fs123NameCache", true)};
-
+    std::atomic<float> load_timeout_factor{core123::envto<float>("Fs123LoadTimeoutFactor", 1.5f)};
+    // no_verify_*: only meaningful for ssl.
+    std::atomic<bool> no_verify_peer{core123::envto<bool>("Fs123NoVerifyPeer", false)};
+    std::atomic<bool> no_verify_host{core123::envto<bool>("Fs123NoVerifyHost", false)};
+    // so_rcvbuf:  see comments in backend123_http.cpp.  0 means leave system default in place.
+    std::atomic<int> so_rcvbuf{core123::envto<int>("Fs123SO_RCVBUF", 24*1024)};
+    // Note thaat netrc_file is not atomic and cannot be modified at runtime with
+    // an ioctl.  
+    std::string netrc_file{core123::envto<std::string>("Fs123NetrcFile", "")};
+    
     // See retry logic in app_mount.cpp
     std::atomic<unsigned> retry_timeout{core123::envto<unsigned>("Fs123RetryTimeout", 0)};
     std::atomic<unsigned> retry_initial_millis{core123::envto<unsigned>("Fs123RetryInitialMillis", 100)};;
     std::atomic<unsigned> retry_saturate{core123::envto<unsigned>("Fs123RetrySaturate", 1)};
-
     std::atomic<bool> ignore_estale_mismatch{core123::envto<bool>("Fs123IgnoreEstaleMismatch", false)};
+    std::atomic<unsigned> maintenance_interval{core123::envto<unsigned>("Fs123MaintenanceInterval", 60)};
+    std::atomic<bool> mlockall{core123::envto<bool>("Fs123Mlockall", false)};
 
     // Used in diskcache.cpp to control eviction.
     std::atomic<float> evict_lwm{core123::envto<float>("Fs123EvictLwm", 0.7)};
@@ -50,15 +61,7 @@ struct volatiles_t{
     std::atomic<size_t> dc_maxmbytes{core123::envto<size_t>("Fs123CacheMaxMBytes", 100)};
     std::atomic<size_t> dc_maxfiles{core123::envto<size_t>("Fs123CacheMaxFiles", dc_maxmbytes*1000000/16384)};
 
-    // doesn't need to be volatile, but it makes the ioctl code cleaner
-    std::atomic<bool> mlockall{core123::envto<bool>("Fs123Mlockall", false)};
 
-    // Timeouts are increased when the load average-per-core exceeds this in backend_http.cpp
-    std::atomic<float> load_timeout_factor{core123::envto<float>("Fs123LoadTimeoutFactor", 1.5f)};
-
-    // How frequently do we run regular_maintenance.
-    std::atomic<unsigned> maintenance_interval{core123::envto<unsigned>("Fs123MaintenanceInterval", 60)};
-    
     // things we measure from time to time about our
     // current "environment":
     const static unsigned hw_concurrency; // = std::thread::hardware_concurrency()

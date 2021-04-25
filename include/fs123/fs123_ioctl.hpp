@@ -42,5 +42,8 @@ struct fs123_ioctl_data{
 #define MAINTENANCE_INTERVAL_IOC _IOW(0, 130, fs123_ioctl_data)
 #define PEER_CONNECT_TIMEOUT_IOC _IOW(0, 131,fs123_ioctl_data)
 #define PEER_TRANSFER_TIMEOUT_IOC _IOW(0, 132,fs123_ioctl_data)
+#define NO_VERIFY_PEER_IOC _IOW(0, 133, fs123_ioctl_data)
+#define NO_VERIFY_HOST_IOC _IOW(0, 134, fs123_ioctl_data)
+#define SO_RCVBUF_IOC _IOW(0, 135, fs123_ioctl_data)
 
 #endif

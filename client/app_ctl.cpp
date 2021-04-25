@@ -22,6 +22,9 @@ int complain(){
         " PeerConnectTimeout\n"
         " PeerTransferTimeout\n"
         " LoadTimeoutFactor\n"
+        " NoVerifyPeer\n"
+        " NoVerifyHost\n"
+        " SO_RCVBUF\n"
         " NameCache\n"
         " Mlockall\n"
         " PastStaleWhileRevalidate\n"
@@ -103,6 +106,12 @@ int app_ctl(int argc, char **argv) try {
         ioc = LOAD_TIMEOUT_FACTOR_IOC;
     }else if(cmd == "NameCache"){
         ioc = NAMECACHE_IOC;
+    }else if(cmd == "NoVerifyPeer"){
+        ioc = NO_VERIFY_PEER_IOC;
+    }else if(cmd == "NoVerifyHost"){
+        ioc = NO_VERIFY_HOST_IOC;
+    }else if(cmd == "SO_RCVBUF"){
+        ioc = SO_RCVBUF_IOC;
     }else if(cmd == "Mlockall"){
         ioc = MLOCKALL_IOC;
     }else if(cmd == "PastStaleWhileRevalidate"){

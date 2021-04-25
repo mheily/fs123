@@ -1953,6 +1953,15 @@ void fs123_ioctl(fuse_req_t req, fuse_ino_t ino, int cmd, void *arg, struct fuse
     case NAMECACHE_IOC:
         VOLATILE_IOCTL(namecache);
         return;
+    case NO_VERIFY_PEER_IOC:
+        VOLATILE_IOCTL(no_verify_peer);
+        return;
+    case NO_VERIFY_HOST_IOC:
+        VOLATILE_IOCTL(no_verify_host);
+        return;
+    case SO_RCVBUF_IOC:
+        VOLATILE_IOCTL(so_rcvbuf);
+        return;
     case MLOCKALL_IOC:
         VOLATILE_IOCTL(mlockall);
         if(volatiles->mlockall)
@@ -2343,8 +2352,8 @@ std::ostream& report_config(std::ostream& os){
 #endif
         // In backend123
         Prt(Fs123SO_RCVBUF, 1024 * 24)
-        Prt(Fs123SSLNoVerifyPeer, "<unset>") // default in backend123_http.cpp
-        Prt(Fs123SSLNoVerifyHost, "<unset>") // default in backend123_http.cpp
+        Prt(Fs123SSLNoVerifyPeer, "<unset>") // default in volatiles.hpp
+        Prt(Fs123SSLNoVerifyHost, "<unset>") // default in volatiles.hpp
         //Prt(Fs123TransferTimeout)
         //Prt(Fs123ConnectTimeout)
         //Prt(Fs123PeerTransferTimeout)
@@ -2352,7 +2361,7 @@ std::ostream& report_config(std::ostream& os){
         //Prt(Fs123LoadTimeoutFactor)
         //Prt(Fs123NameCache)
         //Prt(Fs123Disconnected)
-        Prt(Fs123NetrcFile, "<unset>")       // default in backend123_http.cpp
+        Prt(Fs123NetrcFile, "<unset>")       // default in volatiles.hpp
         //Prt(Fs123CacheTag)
         //Prt(Fs123HttpMaxRedirects)
         //Prt(Fs123CurlHandlesRedirects)

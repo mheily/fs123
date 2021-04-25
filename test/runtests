@@ -318,7 +318,7 @@ tests=$(ls -t $testdir/t-*[a-zA-Z0-9])
 #garden prepend-path PATH $MTroot/sbin
 
 PATH=$MTroot/sbin:$PATH
-echo Running tests in this order: $(sed s@$testdir/@@g <<< $tests)
+echo Running tests in this order: $(sed s!$testdir/!!g <<< $tests)
 failed=
 for f in $tests; do
     if [ -x "$f" ]; then

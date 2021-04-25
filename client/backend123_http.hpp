@@ -85,9 +85,7 @@ private:
     std::vector<url_info> baseurls;
     void setoptions(CURL* curl) const;
     std::string stale_if_error;
-    std::string netrcfile;
     size_t content_reserve_size;
-    bool using_https;
     std::string accept_encoding;
     volatiles_t& vols;
     flavor_e flavor;
