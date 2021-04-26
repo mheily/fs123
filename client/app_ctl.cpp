@@ -26,6 +26,7 @@ int complain(){
         " NoVerifyHost\n"
         " SO_RCVBUF\n"
         " NameCache\n"
+        " NameCacheSize\n"
         " Mlockall\n"
         " PastStaleWhileRevalidate\n"
         " StaleIfError\n"
@@ -106,6 +107,8 @@ int app_ctl(int argc, char **argv) try {
         ioc = LOAD_TIMEOUT_FACTOR_IOC;
     }else if(cmd == "NameCache"){
         ioc = NAMECACHE_IOC;
+    }else if(cmd == "NameCacheSize"){
+        ioc = NAMECACHE_SIZE_IOC;
     }else if(cmd == "NoVerifyPeer"){
         ioc = NO_VERIFY_PEER_IOC;
     }else if(cmd == "NoVerifyHost"){

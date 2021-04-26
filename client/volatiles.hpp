@@ -41,7 +41,7 @@ struct volatiles_t{
     std::atomic<bool> no_verify_host{core123::envto<bool>("Fs123NoVerifyHost", false)};
     // so_rcvbuf:  see comments in backend123_http.cpp.  0 means leave system default in place.
     std::atomic<int> so_rcvbuf{core123::envto<int>("Fs123SO_RCVBUF", 24*1024)};
-    // Note thaat netrc_file is not atomic and cannot be modified at runtime with
+    // Note that netrc_file is not atomic and cannot be modified at runtime with
     // an ioctl.  
     std::string netrc_file{core123::envto<std::string>("Fs123NetrcFile", "")};
     
@@ -52,6 +52,7 @@ struct volatiles_t{
     std::atomic<bool> ignore_estale_mismatch{core123::envto<bool>("Fs123IgnoreEstaleMismatch", false)};
     std::atomic<unsigned> maintenance_interval{core123::envto<unsigned>("Fs123MaintenanceInterval", 60)};
     std::atomic<bool> mlockall{core123::envto<bool>("Fs123Mlockall", false)};
+    std::atomic<size_t> namecache_size{core123::envto<size_t>("Fs123NameCacheSize", 300)}; // possibly one per peer, so a few hundred is a reasonable upper bound
 
     // Used in diskcache.cpp to control eviction.
     std::atomic<float> evict_lwm{core123::envto<float>("Fs123EvictLwm", 0.7)};

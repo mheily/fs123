@@ -347,7 +347,8 @@ private:
 };
 
 struct distrib_cache_backend : public backend123{
-    distrib_cache_backend(backend123* _upstream_backend, backend123* _server_backend, const std::string& scope, volatiles_t& volatiles);
+    distrib_cache_backend(backend123* _upstream_backend, backend123* _server_backend, const std::string& scope,
+                          core123::addrinfo_cache& aicache, volatiles_t& volatiles);
     virtual ~distrib_cache_backend();
     bool refresh(const req123&, reply123*) override;
     std::ostream& report_stats(std::ostream& os) override;
@@ -374,6 +375,7 @@ private:
     std::unique_ptr<fs123p7::server> myserver;
     std::string server_url;
     std::future<void> server_future;
+    core123::addrinfo_cache& aicache;
     volatiles_t& vols;
     std::future<void> udp_future;
     void udp_listener(); // returns to the udp_future

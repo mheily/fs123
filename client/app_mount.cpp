@@ -55,6 +55,7 @@
 #include <core123/strutils.hpp>
 #include <core123/pathutils.hpp>
 #include <core123/periodic.hpp>
+#include <core123/addrinfo_cache.hpp>
 #include <fuse/fuse_lowlevel.h>
 
 #include <unordered_map>
@@ -107,6 +108,7 @@ auto _read = diag_name("read");
 // some diagnostics track specific control paths
 auto _estale = diag_name("estale");
 auto _retry = diag_name("retry");
+auto _namecache = diag_name("namecache");
 auto _periodic = diag_name("periodic");
 auto _shutdown = diag_name("shutdown");
 // A (possibly out-of-date) list of other diag_names elsewhere in the code:
@@ -179,6 +181,8 @@ struct attrcache_value_t{
 std::unique_ptr<expiring_cache<fuse_ino_t, attrcache_value_t, clk123_t>> attrcache;
 bool privileged_server;
 bool support_xattr;
+
+std::unique_ptr<addrinfo_cache> aicache;
 
 // Our 'backends' are stacked.  So they can call one another, they may hold *non-owning* pointers
 // to one another.  Ownership is managed here, with file-scope unique_ptrs that
@@ -881,12 +885,26 @@ void regular_maintenance(){
     if(secret_mgr)
         secret_mgr->regular_maintenance();
 
-    // the backend_http regular maintenance calls getaddrinfo to keep
-    // the name cache up to date.  It can take a while if the network
-    // is flakey or if the load average is very high.  Nevertheless,
-    // it's better to take the hit in the maintenance thread than to
-    // take it in a content-serving thread.
-    http_be->regular_maintenance();
+    if(volatiles->namecache){
+        DIAG(_namecache, "aicache.refresh()\n");
+        if(aicache->size() > volatiles->namecache_size)
+            complain(LOG_NOTICE, "aicache->size() (%zu) is larger than Fs123NameCacheSize (%zu).  least recently used elements of aicache will be flushed.", aicache->size(), volatiles->namecache_size.load());
+        aicache->refresh(volatiles->namecache_size);
+        try{
+            // this may be paranoid, but it's very hard to test the
+            // aicache so in the spirit of mcheck_check_all, we have a
+            // slow-but-safe invariant checker.  The checker locks the
+            // cache and does a lookup for every entry but it does not
+            // call getaddrinfo or any other system call, so the
+            // navel-gazing should only take a couple of microseconds.
+            stats.aicache_checks++;
+            atomic_scoped_nanotimer _t(&stats.aicache_check_sec);
+            aicache->_check_invariant();
+        }catch(std::exception& e){
+            complain(LOG_ERR, e, "addrinfo_cache::check_invariant detected internal inconsistencies.  Turning off the namecache for now.  Consider attaching a debugger and turning the namecache back on to investigate!");
+            volatiles->namecache.store(false);
+        }
+    }
 
     if(distrib_cache_be)
         distrib_cache_be->regular_maintenance();
@@ -991,13 +1009,15 @@ void fs123_init(void *, struct fuse_conn_info *conn_info) try {
     else if(proto_minor > fs123_protocol_minor_max)
         throw se(EINVAL, fmt("Fs123ProtoMinor too large.  Maximum value: %d", fs123_protocol_minor_max));
 
+    aicache = std::make_unique<addrinfo_cache>();
+
     // One-stop shopping for all our dynamic configuration:
     volatiles = std::make_unique<volatiles_t>();
     
     // The first non-option argument was extracted as 'fuse_device_option'.
     // It's the url we pass to backend123.
     baseurl = backend123::add_sigil_version(fuse_device_option);
-    http_be = std::make_unique<backend123_http>(baseurl, accepted_encodings, *volatiles);
+    http_be = std::make_unique<backend123_http>(baseurl, accepted_encodings, *aicache, *volatiles);
     if(!http_be)
         throw se(ENOMEM, fmt("new backend123_http(%s) returned nullptr.  Something is terribly wrong.", fuse_device_option.c_str()));
     std::string fallbacks = envto<std::string>("Fs123FallbackUrls", "");
@@ -1035,10 +1055,10 @@ void fs123_init(void *, struct fuse_conn_info *conn_info) try {
         // See the comment at the top of distrib_cache_backend.hpp for a description
         // of these 'styles'
         if(distrib_cache_style == "diskcache-in-front"){
-            distrib_cache_be = std::make_unique<distrib_cache_backend>(http_be.get(), diskcache_be.get(), baseurl, *volatiles);
+            distrib_cache_be = std::make_unique<distrib_cache_backend>(http_be.get(), diskcache_be.get(), baseurl, *aicache, *volatiles);
             diskcache_be->set_upstream(distrib_cache_be.get());
         }else if(distrib_cache_style == "diskcache-behind"){
-            distrib_cache_be = std::make_unique<distrib_cache_backend>(diskcache_be.get(), diskcache_be.get(), baseurl, *volatiles);
+            distrib_cache_be = std::make_unique<distrib_cache_backend>(diskcache_be.get(), diskcache_be.get(), baseurl, *aicache, *volatiles);
             be = distrib_cache_be.get();
         }else{
             throw se(EINVAL, "Unrecognized value of Fs123DistribCacheExperimental: " + distrib_cache_style + ".  Expected either 'diskcache-in-front' or 'diskcache-behind'");
@@ -1157,6 +1177,7 @@ void fs123_destroy(void*){
     diskcache_be.reset();         DIAG(_shutdown, "diskcache_be.reset() done");
     http_be.reset();              DIAG(_shutdown, "http_be.reset() done");
     volatiles.reset();            DIAG(_shutdown, "volatiles_be.reset() done");
+    aicache.reset();              DIAG(_shutdown, "aicache.reset() done");
     secret_mgr.reset();           DIAG(_shutdown, "secret_mgr.reset() done");
     complain(LOG_NOTICE, "return from fs123_destroy at epoch: " + str(std::chrono::system_clock::now()));
 }
@@ -1953,6 +1974,9 @@ void fs123_ioctl(fuse_req_t req, fuse_ino_t ino, int cmd, void *arg, struct fuse
     case NAMECACHE_IOC:
         VOLATILE_IOCTL(namecache);
         return;
+    case NAMECACHE_SIZE_IOC:
+        VOLATILE_IOCTL(namecache_size);
+        return;
     case NO_VERIFY_PEER_IOC:
         VOLATILE_IOCTL(no_verify_peer);
         return;
@@ -2224,6 +2248,15 @@ std::ostream& vm_report(std::ostream& os){
 std::ostream& report_stats(std::ostream& os){
     stats.elapsed_sec = elapsed_asnt.elapsed();
     os << stats;
+    if(volatiles->namecache){
+        os << "aicache_hits: " << aicache->hit_count() << "\n"
+           << "aicache_misses: " << aicache->miss_count() << "\n"
+           << "aicache_refreshes: " << aicache->refresh_count() << "\n"
+           << "aicache_agains: " << aicache->eai_again_count() << "\n"
+           << "aicache_erases: " << aicache->erase_count() << "\n"
+           << "aicache_size: " << aicache->size() << "\n"
+            ;
+    }
     if(diskcache_be)
         diskcache_be->report_stats(os);
     if(http_be)
@@ -2301,6 +2334,7 @@ std::ostream& report_config(std::ostream& os){
        << "Fs123PeerTransferTimeout: " << volatiles->peer_transfer_timeout << "\n"
        << "Fs123LoadTimeoutFactor: " << volatiles->load_timeout_factor << "\n"
        << "Fs123NameCache: " << volatiles->namecache << "\n"
+       << "Fs123NameCacheSize: " << volatiles->namecache_size << "\n"
        << "Fs123Mlockall: " << volatiles->mlockall << "\n"
        << "Fs123Disconnected: " << volatiles->disconnected << "\n"
        << "Fs123NoKernelDataCaching: " << no_kernel_data_caching << "\n"
@@ -2360,6 +2394,7 @@ std::ostream& report_config(std::ostream& os){
         //Prt(Fs123PeerConnectTimeout)
         //Prt(Fs123LoadTimeoutFactor)
         //Prt(Fs123NameCache)
+        //Prt(Fs123NameCacheSize, 300)
         //Prt(Fs123Disconnected)
         Prt(Fs123NetrcFile, "<unset>")       // default in volatiles.hpp
         //Prt(Fs123CacheTag)
@@ -2463,6 +2498,7 @@ try {
                                     "Fs123PeerConnectTimeout=",
                                     "Fs123LoadTimeoutFactor=",
                                     "Fs123NameCache=",
+                                    "Fs123NameCacheSize=",
                                     "Fs123Mlockall=",
                                     "Fs123Disconnected=",
                                     "Fs123NoKernelDataCaching=",    // Debug/diagnostic only.  Will kill performance.

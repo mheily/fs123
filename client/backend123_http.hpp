@@ -63,7 +63,8 @@ struct backend123_http : public backend123 {
     // "distrib_cache" flavor.
     enum flavor_e {primary, distrib_cache};
                    
-    backend123_http(const std::string& _baseurl, const std::string& _accept_encodings, volatiles_t& volatiles, flavor_e flavor = primary);
+    backend123_http(const std::string& _baseurl, const std::string& _accept_encodings,
+                    core123::addrinfo_cache& aicache, volatiles_t& volatiles, flavor_e flavor = primary);
     void add_fallback_baseurl(const std::string& s){
         baseurls.emplace_back(s);
     }
@@ -75,8 +76,6 @@ struct backend123_http : public backend123 {
     std::ostream& report_stats(std::ostream&) override;
     struct curl_handler;
 
-    void regular_maintenance();
-
     std::string get_url() const {
         return baseurls.front().original;
     }
@@ -87,12 +86,12 @@ private:
     std::string stale_if_error;
     size_t content_reserve_size;
     std::string accept_encoding;
+    core123::addrinfo_cache& aicache;
     volatiles_t& vols;
     flavor_e flavor;
     // some flavor-dependendent pointers into vols
     std::atomic<long> *connect_timeout;
     std::atomic<long> *transfer_timeout;
-    core123::addrinfo_cache aicache;
 
 #define STATS_STRUCT_TYPENAME backend123_http_statistics_t
 #define STATS_MACRO_NAME BACKEND_HTTP_STATISTICS

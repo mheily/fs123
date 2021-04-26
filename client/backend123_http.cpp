@@ -927,13 +927,7 @@ protected:
 };
 
 std::ostream& backend123_http::report_stats(std::ostream& os){
-    return os << stats
-              << "aicache_hits: " << aicache.hit_count() << "\n"
-              << "aicache_misses: " << aicache.miss_count() << "\n"
-              << "aicache_refreshes: " << aicache.refresh_count() << "\n"
-              << "aicache_agains: " << aicache.eai_again_count() << "\n"
-              << "aicache_size: " << aicache.size() << "\n"
-        ;
+    return os << stats;
 }
 
 #ifndef CURL_SOCKOPT_OK // it's not defined in 7.19 on CentOS6
@@ -963,28 +957,6 @@ int sockoptcallback(void *_vols, curl_socket_t curlfd, curlsocktype /*purpose*/)
     // This is a curl callback.  We can't throw.
     return CURL_SOCKOPT_ERROR;
  }
-
-void backend123_http::regular_maintenance(){
-    if(vols.namecache){
-        DIAG(_namecache, "aicache.refresh()\n");
-        aicache.refresh();
-        try{
-            // this shouldn't be necessary...  A bug was fixed in
-            // core123/0.27.1, but since there's no unit test, we're
-            // paranoid that other bugs may be lurking.  In 0.27.2, we
-            // added a self-test to the aicache.  It locks the aicache
-            // and blocks lookups in other threads while it runs, so
-            // it's undesirable in production.  But since production
-            // servers typically have only two or three names in their
-            // cache, the navel-gazing should only take a couple of
-            // microseconds.
-            aicache._check_invariant();
-        }catch(std::exception& e){
-            complain(LOG_ERR, e, "addrinfo_cache::check_invariant detected internal inconsistencies.  Turning off the namecache for now.  Consider attaching a debugger and turning the namecache back on to investigate!");
-            vols.namecache.store(false);
-        }
-    }
-}
 
 void backend123_http::setoptions(CURL *curl) const{
     // Forcing HTTP/1.1 tells libcurl not to close connections even though
@@ -1086,10 +1058,13 @@ void backend123_http::setoptions(CURL *curl) const{
     }
 }
 
-backend123_http::backend123_http(const std::string& _baseurl, const std::string& _accept_encoding, volatiles_t& _vols, flavor_e _flavor)
+backend123_http::backend123_http(const std::string& _baseurl, const std::string& _accept_encoding,
+                                 addrinfo_cache& _aicache,
+                                 volatiles_t& _vols, flavor_e _flavor)
     : backend123(),
       baseurls{}, content_reserve_size(129 * 1024), // 129k leaves room for the 'validator' in a 128k request
       accept_encoding(_accept_encoding),
+      aicache(_aicache),
       vols(_vols),
       flavor(_flavor)
 {

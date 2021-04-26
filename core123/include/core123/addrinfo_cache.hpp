@@ -219,6 +219,7 @@ struct addrinfo_cache{
         while(the_map.size() > max_size){
             auto p = least_ru->second.more_ru;
             the_map.erase(least_ru);
+            _erase_count++;
             least_ru = p;
         }
         // It's safe to iterate over the_map because the only place
@@ -257,6 +258,10 @@ struct addrinfo_cache{
     size_t refresh_count() const{
         return _refresh_count;
     }
+
+    size_t erase_count() const{
+        return _erase_count;
+    }
     addrinfo_cache() = default;
     // Non-copyable
     addrinfo_cache(const addrinfo_cache&) = delete;
@@ -268,6 +273,7 @@ private:
     std::atomic<size_t> _hit_count{0};
     std::atomic<size_t> _miss_count{0};
     std::atomic<size_t> _refresh_count{0};
+    std::atomic<size_t> _erase_count{0};
     // most_ru and least_ru are the head and tail of an auxiliary
     // linked list in recently-used order.  They are uninitialized,
     // and may not be used unless the_map contains at least one entry.
@@ -292,7 +298,7 @@ private:
         if(p==least_ru){
             // disconnect pmr by moving the least_ru link "forward"
             least_ru = pmr.more_ru;
-            // N.B.  least_ru->second.more_ru is undefined/unusable
+            // N.B.  least_ru->second.less_ru is undefined/unusable
         }else{
             // disconnect pmr by relink "around"  it
             pmr.less_ru->second.more_ru = pmr.more_ru;

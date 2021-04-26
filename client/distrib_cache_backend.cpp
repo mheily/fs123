@@ -125,11 +125,13 @@ string cache_control(const reply123& r) {
 }
 } // namespace <anon>
 
-distrib_cache_backend::distrib_cache_backend(backend123* upstream, backend123* server, const std::string& _scope, volatiles_t& volatiles) :
+distrib_cache_backend::distrib_cache_backend(backend123* upstream, backend123* server, const std::string& _scope,
+                                             addrinfo_cache& _aicache, volatiles_t& volatiles) :
     upstream_backend(upstream),
     server_backend(server),
     scope(_scope),
     peer_handler(*this),
+    aicache(_aicache),
     vols(volatiles)
 {
     // - instantiate an fs123p7::server.
@@ -351,7 +353,8 @@ distrib_cache_backend::suggested_peer(const string& peerurl){
         // uninterpreted binary data back.  The data *may* have an
         // encoding, but we're oblivious to that, and we don't want
         // another layer of encryption or encoding added.
-        be = make_unique<backend123_http>(add_sigil_version(peerurl), "", vols, backend123_http::distrib_cache);
+        be = make_unique<backend123_http>(add_sigil_version(peerurl), "",
+                                          aicache, vols, backend123_http::distrib_cache);
         // Get the uuid, which also checks connectivity.
         req123 req("/p/p/uuid", req123::MAX_STALE_UNSPECIFIED);
         // FIXME?  - time the be->refresh().  If it's slow (whatever

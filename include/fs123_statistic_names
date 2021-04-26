@@ -42,3 +42,5 @@ STATISTIC(releases);
 STATISTIC(caught_system_errors)
 STATISTIC(caught_std_exceptions)
 STATISTIC(toplevel_retries)
+STATISTIC(aicache_checks)
+STATISTIC_NANOTIMER(aicache_check_sec)
