@@ -2099,34 +2099,6 @@ void fs123_ioctl(fuse_req_t req, fuse_ino_t ino, int cmd, void *arg, struct fuse
         complain(LOG_NOTICE, "changed Fs123LogMaxHourlyRate=%s", rdo->buf);
         fuse_reply_ioctl(req, 0, nullptr, 0);
         return;
-    case ADD_PEER_IOC:
-        if(!distrib_cache_be)
-            throw se(EINVAL, "ioctl(ADD_PEER_IOC, ...): No distributed cache");
-        {
-        if( in_bufsz != sizeof(fs123_ioctl_data) )
-            throw se(EINVAL, "Wrong size for ioctl");
-        rdo = (fs123_ioctl_data*)in_buf;
-        rdo->buf[ sizeof(rdo->buf)-1 ] = '\0';
-        // Expect input of the form:
-        //  UUID baseurl
-        // where there is exactly one space between the UUID and the
-        // baseurl.
-        distrib_cache_be->suggest_peer(rdo->buf);
-        fuse_reply_ioctl(req, 0, nullptr, 0);
-        }
-        return;
-    case REMOVE_PEER_IOC:
-        if(!distrib_cache_be)
-            throw se(EINVAL, "ioctl(REMOVE_PEER_IOC, ...): No distributed cache");
-        {
-        if( in_bufsz != sizeof(fs123_ioctl_data) )
-            throw se(EINVAL, "Wrong size for ioctl");
-        rdo = (fs123_ioctl_data*)in_buf;
-        rdo->buf[ sizeof(rdo->buf)-1 ] = '\0';
-        distrib_cache_be->discourage_peer(rdo->buf);
-        fuse_reply_ioctl(req, 0, nullptr, 0);
-        }
-        return;
     case INVALIDATE_INODE_IOC:
         {
         if( in_bufsz != sizeof(fs123_ioctl_data) )
@@ -2405,6 +2377,7 @@ std::ostream& report_config(std::ostream& os){
         Prt(Fs123DistribCacheExperimental, "false")// default in distrib_cache_backend.cpp
         Prt(Fs123DistribCacheReflector, "<unset>") // default in distrib_cache_backend.cpp
         Prt(Fs123DistribCacheMulticastLoop, "false")// default in distrib_cache_backend.cpp
+        Prt(Fs123DangerousNoDistribCacheAbsentOnShutdown, "false") // default in distrib_cache_backend.cpp.
         //Prt(Fs123PastStaleWhileRevalidate)
         //Prt(Fs123CacheMaxMBytes)
         //Prt(Fs123CacheMaxFiles)
@@ -2524,6 +2497,7 @@ try {
                                     "Fs123DistribCacheExperimental=",
                                     "Fs123DistribCacheReflector=",
                                     "Fs123DistribCacheMulticastLoop=",
+                                    "Fs123DangerousNoDistribCacheAbsentOnShutdown=", // Debug/diagnostic only.  Stresses distrib-cache.
                                     // env-vars with conventional meaning to libcurl
                                     // can be set on the command line.
                                     "http_proxy=",

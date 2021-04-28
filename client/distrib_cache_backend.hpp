@@ -128,12 +128,16 @@
     STATISTIC(distc_inserted_peers)    \
     STATISTIC(distc_removed_peers)     \
     STATISTIC(distc_replaced_peers)    \
-    STATISTIC(distc_suggestions_sent)   \
-    STATISTIC(distc_suggestions_recvd)  \
-    STATISTIC(distc_suggestions_checked)  \
-    STATISTIC(distc_discourages_sent)  \
+    STATISTIC(distc_presents_sent)   \
+    STATISTIC(distc_presents_recvd)  \
+    STATISTIC(distc_presents_checked)  \
+    STATISTIC(distc_absents_sent)  \
+    STATISTIC(distc_absents_recvd) \
+    STATISTIC(distc_self_absents_recvd) \
+    STATISTIC(distc_discourages_sent) \
     STATISTIC(distc_discourages_recvd) \
     STATISTIC(distc_self_discourages_recvd) \
+    STATISTIC(distc_peer_errors) \
     STATISTIC(distc_server_refreshes)   \
     STATISTIC(distc_server_refresh_not_modified) \
     STATISTIC_NANOTIMER(distc_server_refresh_sec) \
@@ -319,6 +323,19 @@ public:
         return p->second;
     }
 
+    peer::sp lookup_peerurl(const std::string& purl) const {
+        std::lock_guard<std::mutex> lg(mtx);
+        auto p = url_to_uuid.find(purl);
+        if( p == url_to_uuid.end() )
+            return {};
+        const std::string& uuid = p->second;
+        auto h = hash(uuid, 1);
+        auto q = ring.find(h);
+        if(q == ring.end())
+            return {};
+        return q->second;
+    }
+
     void forall_peers(std::function<void(const decltype(uuid_to_peer)::value_type&)> F) const {
         std::lock_guard<std::mutex> lg(uu2pmtx);
         for(const auto& e : uuid_to_peer){
@@ -338,6 +355,9 @@ public:
     void f(req_up req, uint64_t /*inm64*/, size_t /*len*/, uint64_t /*offset*/, void */*buf*/) override { not_found(std::move(req)); }
     void l(req_up req) override { not_found(std::move(req)); }
     void s(req_up req) override { not_found(std::move(req)); }
+    // The only non-trivial handler is the /p{ass-through} sub-protocol.
+    // It's awfully simple, but let's version it just in case...
+    inline static const std::string VERSION = "/1";
     void p(req_up, uint64_t, std::istream& ) override;
 private:
     static void not_found(req_up req){
@@ -352,16 +372,25 @@ struct distrib_cache_backend : public backend123{
     virtual ~distrib_cache_backend();
     bool refresh(const req123&, reply123*) override;
     std::ostream& report_stats(std::ostream& os) override;
-    // *this is the subject of suggest_peer and discourage_peer.  I.e.,
-    // we are making the suggestion.
-    void suggest_peer(const std::string& peerurl) const;
-    void discourage_peer(const std::string& peerurl) const;
-    void discourage_peer_noexcept(const std::string& peerurl) const noexcept;
-    // *this is the object of suggested_peer and discouraged_per.  I.e.,
-    // the suggestion is being made to us.
-    void suggested_peer(const std::string& peerurl);
-    void discouraged_peer(const std::string& peerurl);
-    
+
+    // send_{present,absent} says *I* am present/absent.  This differs
+    // from 'send_{suggest,discourage}_peer' which say "I think <X> is
+    // present/absent"
+    void send_present() const noexcept;
+    void send_absent() const noexcept;
+    //void send_suggest_peer(const std::string& peerurl) const noexcept;
+    void send_discourage_peer(const std::string& peerurl) const noexcept;
+
+    // handle_xxx get called on the receiving end of send_xxx
+    void handle_present(const std::string& peerurl);
+    void handle_absent(const std::string& peerurl);
+    //void handle_suggested_peer(const std::string& peerurl);
+    void handle_discourage_peer(const std::string& peerurl);
+    // handle_peer_error is called when we detect an error talking to
+    // a peer.  The side effects are similar to, but not necessarily
+    // exactly the same as handle_absent.
+    void handle_peer_error(const std::string& peerurl);
+
     std::string get_url() const { return server_url; }
     std::string get_uuid() override { return server_backend->get_uuid(); }
     void regular_maintenance();

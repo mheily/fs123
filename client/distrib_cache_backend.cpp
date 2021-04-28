@@ -2,6 +2,7 @@
 #include "fs123/httpheaders.hpp"
 #include <core123/strutils.hpp>
 #include <core123/diag.hpp>
+#include <core123/scoped_timer.hpp>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netdb.h>
@@ -42,14 +43,17 @@ namespace {
 // vector of str_views to a local copy of the sender's NUL-terminated
 // str_views.
 //
-// N.B.  We're breaking our standing rule about exceptions here: send
+// N.B.  We're breaking our standing rule about exceptions here: recv
 // *only* throw an exception when the fd itself looks completely
 // borked.  If the only problem is garbled data, e.g., missing NULs,
-// it just returns with an empty 'parts'.
+// or an incorrect version prefix, it just complains and returns with
+// an empty 'parts'.
 struct distrib_cache_message{
     std::array<char,512> data;
     std::vector<core123::str_view> parts;
-
+    // VERSION is semantically just a string that either matches or doesn't.
+    // But it's easier to think about if we keep it numeric.
+    static constexpr str_view VERSION{"1"};
     template <typename ITER>
     static void send(int sockfd, const struct sockaddr_in& dest, ITER b, ITER e);
     void recv(int fd);
@@ -64,10 +68,12 @@ distrib_cache_message::send(int sockfd, const struct sockaddr_in& dest,
     struct msghdr msghdr = {};
     msghdr.msg_name = (void*)&dest;
     msghdr.msg_namelen = sizeof(struct sockaddr_in);
-    msghdr.msg_iovlen = 2*(e-b);
+    msghdr.msg_iovlen = 1 + 2*(e-b);
     struct iovec iov[msghdr.msg_iovlen];
+    iov[0].iov_base = const_cast<char*>(VERSION.data());
+    iov[0].iov_len = VERSION.size()+1; // including the NUL
     msghdr.msg_iov = iov;
-    int i=0;
+    int i=1;
     while(b != e){
         iov[i].iov_base = const_cast<char*>(b->data());
         iov[i].iov_len = b->size();
@@ -88,22 +94,27 @@ void distrib_cache_message::recv(int fd){
     // "spurious" wakeups (can that happen?)
     auto recvd = ::recv(fd, data.data(), data.size(), MSG_DONTWAIT|MSG_TRUNC);
     if(recvd < 0){
-        if(errno == EAGAIN){
-            complain(LOG_WARNING, "udp_listener:  unexpected EAGAIN from recv(MSG_DONTWAIT)");
-            return; // empty message
-        }
+        if(errno == EAGAIN)
+            return complain(LOG_WARNING, "udp_listener:  unexpected EAGAIN from recv(MSG_DONTWAIT)");
         throw se("recv(udp_fd) in udp_listener");
     }
-    if(size_t(recvd) > data.size()){ // see MSG_TRUNC
-        complain(LOG_WARNING, "distrib_cache_message::recv:  message is too long.  Treating as empty");
-        return;
-    }
-    if(recvd > 0 && data[recvd-1] != '\0'){
-        complain(LOG_WARNING, "distrib_cache_message::recv:  message is not NUL-terminated.  Treating as empty.");
-        return;
-    }
+    if(recvd == 0)
+        return complain(LOG_WARNING, "distrib_cache_messages::recv:  empty message");
+    if(size_t(recvd) > data.size()) // see MSG_TRUNC
+        return complain(LOG_WARNING, "distrib_cache_message::recv:  message is too long.  Treating as empty");
+    if(data[recvd-1] != '\0')
+        return complain(LOG_WARNING, "distrib_cache_message::recv:  message is not NUL-terminated.  Treating as empty.");
+    // check the version, but don't include it in 'parts'
+    str_view version{&data[0]}; // we just checked that data is NUL-terminated
+    // As in diskcache.cpp, a bad version/magic number is reported
+    // with severity LOG_NOTICE.  It's typical to get a large number
+    // of these when upgrading the software version of machines on a
+    // network, and there's cross-talk between old and new code.
+    if(version != VERSION)
+        return complain(LOG_NOTICE, "distrib_cache_message::recv:  incorrect version");
+    
     parts.reserve(3); // we're expecting 3
-    char *b = &data[0];
+    char *b = &data[version.size()+1];
     char *e = &data[recvd];
     while(b < e){
         char* nextnul = std::find(b, e, '\0');
@@ -208,14 +219,14 @@ distrib_cache_backend::distrib_cache_backend(backend123* upstream, backend123* s
 
 void
 distrib_cache_backend::regular_maintenance() try {
-    // suggest ourselves as a peer to our group.
+    // Announce that we're 'present' as a peer to our group.
     //
     // FIXME - Make this conditional on some kind of self assessment.
     // I.e., don't advertise ourselves as a peer if our load average
     // is so high that we can't respond in a timely manner.  Or
     // consider whether there have recently been 'discouraging' 
     // messages about us.
-    suggest_peer(server_url);
+    send_present();
  }catch(exception& e){
     complain(e, "Exception thrown by distib_cache_backend::regular_maintenance:");
  }
@@ -239,9 +250,13 @@ distrib_cache_backend::report_stats(std::ostream& os){
 }
 
 distrib_cache_backend::~distrib_cache_backend() try {
-    // Tell the world we're closing up shop
-    DIAG(_shutdown, "~distrib_cache_backend: discourage_peer(self)");
-    discourage_peer_noexcept(server_url);
+    if(!envto<bool>("Fs123DangerousNoDistribCacheAbsentOnShutdown", false)){ // for testing only.  Never in production!
+        // Turning this off requires an intentionally long and hard-to-type command-line option.
+        // Tell the world we're closing up shop
+        DIAG(_shutdown, "~distrib_cache_backend: send_absent()");
+        send_absent();
+    }else
+        complain(LOG_NOTICE, "~distrib_cache_backend:  Fs123DangerousNoDistrbCacheAbsentOnShutdown is set.  Absent not sent on multicast channel");
     // Shut down the server
     DIAG(_shutdown, "~distrib_cache_backend: myserver->stop");
     myserver->stop();
@@ -260,7 +275,7 @@ distrib_cache_backend::~distrib_cache_backend() try {
     // What if udp_listener is hung?  We can't carry on with the
     // destructor because udp_listener would access free'ed memory if
     // and when it ever wakes up.  "Hung" is tricky, though.  See the
-    // comment in udp_listener about suggested_peer.
+    // comment in udp_listener about handle_present.
     //
     // This may be a situation where std::terminate is the right/only
     // answer?
@@ -326,26 +341,26 @@ distrib_cache_backend::refresh(const req123& req, reply123* reply) /*override*/ 
     DIAG(_distrib_cache_requests, "forwarding to " << ((p->be == upstream_backend) ? "local: " : "remote: ") << p->uuid);
     auto myreq = req;
     try{
-        myreq.urlstem = "/p" + req.urlstem;
+        myreq.urlstem = "/p" + peer_handler_t::VERSION + req.urlstem;
         return p->be->refresh(myreq, reply);
     }catch(exception& e){
         complain(LOG_WARNING, e, "peer->be->refresh threw.  Discouraging future attempts to use that peer: " + p->url);
-        discourage_peer_noexcept(p->url);
-        discouraged_peer(p->url);
+        handle_peer_error(p->url);
         return upstream_backend->refresh(req, reply);
     }
  }
 
 void
-distrib_cache_backend::suggested_peer(const string& peerurl){
-    distrib_cache_stats.distc_suggestions_recvd++;
-    // If it's already in the peer_map there's nothing to do.
+distrib_cache_backend::handle_present(const string& peerurl){
+    distrib_cache_stats.distc_presents_recvd++;
+    // If it's already in the peer_map there's nothing to do.  Note that this
+    // naturally handles loopbacks on the multicast channel.
     if(peer_map.check_url(peerurl)){
-        DIAG(_distrib_cache, "suggested_peer(" +  peerurl +"): already known");
+        DIAG(_distrib_cache, "handle_present(" +  peerurl +"): already known");
         return;
     }
 
-    distrib_cache_stats.distc_suggestions_checked++;
+    distrib_cache_stats.distc_presents_checked++;
     reply123 rep;
     unique_ptr<backend123_http> be;
     try{
@@ -356,76 +371,148 @@ distrib_cache_backend::suggested_peer(const string& peerurl){
         be = make_unique<backend123_http>(add_sigil_version(peerurl), "",
                                           aicache, vols, backend123_http::distrib_cache);
         // Get the uuid, which also checks connectivity.
-        req123 req("/p/p/uuid", req123::MAX_STALE_UNSPECIFIED);
+        req123 req("/p" + peer_handler_t::VERSION + "/p/uuid", req123::MAX_STALE_UNSPECIFIED);
         // FIXME?  - time the be->refresh().  If it's slow (whatever
         // that means) return before calling insert_peer.
         be->refresh(req, &rep);
-        DIAG(_distrib_cache, "suggested_peer: new url: " + peerurl + " uuid: " + rep.content);
+        DIAG(_distrib_cache, "handle_present: new url: " + peerurl + " uuid: " + rep.content);
     }catch(exception& e){
-        DIAGf(_distrib_cache, "Failed to connect with suggested peer: %s, calling discourage_peer", peerurl.c_str());
-        return discourage_peer_noexcept(peerurl);
+        DIAGf(_distrib_cache, "handle_present: Failed to connect with new peer: %s", peerurl.c_str());
+        // Should we discourage others?  It's unlikely to help much because any
+        // others are probably already executing this code path.  It might be
+        // our problem and not the peer.  Let's not add to the noise.
+        return;
     }
-    // More checks??  E.g., check that /p/a should give us something that is
-    // consistent with our own notion of the root's attributes?
+    // More checks??  E.g., check that /p/a should give us something
+    // that is consistent with our own notion of the root's
+    // attributes?
+
+    // SECURITY: verify that the new peer isn't a malicious (or
+    // misconfigured) man-in-the-middle?  Note that if we are using
+    // secretbox, then we should have end-to-end confidentiality and
+    // integrity, so a MitM isn't a huge problem.  But if we're not
+    // using secretbox, this is an easy way to create an MitM!
     peer_map.insert_peer(make_unique<peer>(rep.content, peerurl, move(be)));
 }
 
 void
-distrib_cache_backend::discouraged_peer(const string& peerurl){
-    // Should we check first?  Or should we remove it immediately?
-    // Checking first prevents "whiplash" when peers look down from
-    // some places and up from others.  But it also potentially leads
-    // to weird "split-brain" configurations.  Not checking more
-    // aggressively falls back to using the 'upstream' which is
-    // good if we can trust the 'discourage' notifications, but bad
-    // if they're untrustworthy.
-    DIAG(_distrib_cache, "discouraged_peer(" + peerurl + ")");
-    distrib_cache_stats.distc_discourages_recvd++;
+distrib_cache_backend::handle_absent(const string& peerurl){
+    distrib_cache_stats.distc_absents_recvd++;
     if(peerurl == server_url){
-        if(!multicast_loop){
-            DIAG(_distrib_cache, "Somebody is discouraging me from talking to my own upstream.  Nope...  Not gonna' do that.");
-            // FIXME? track these more carefully and use that in
-            // regular_maintenance to decide whether to suggest_peer
-            // ourselves to the world.
-            distrib_cache_stats.distc_self_discourages_recvd++;
-        }
+        distrib_cache_stats.distc_self_absents_recvd++;
         return;
     }
     peer_map.remove_url(peerurl);
 }
 
 void
-distrib_cache_backend::suggest_peer(const string& peer_url) const{
-    DIAG(_distrib_cache, "suggest_peer(" + peer_url + ", scope=" + scope + ")");
-    str_view parts[3] = {str_view("P"), str_view(peer_url), str_view(scope)};
-    distrib_cache_message::send(udp_fd, reflector_addr, &parts[0], &parts[3]);
-    distrib_cache_stats.distc_suggestions_sent++;
+distrib_cache_backend::handle_peer_error(const string& peerurl){
+    distrib_cache_stats.distc_peer_errors++;
+    send_discourage_peer(peerurl);
+    peer_map.remove_url(peerurl);
 }
 
 void
-distrib_cache_backend::discourage_peer(const string& peer_url) const{
-    DIAG(_distrib_cache, "discourage_peer(" + peer_url + "), scope=" + scope);
-    str_view parts[3] = {str_view("A"), str_view(peer_url), str_view(scope)};
-    distrib_cache_message::send(udp_fd, reflector_addr, &parts[0], &parts[3]);
-    distrib_cache_stats.distc_discourages_sent++;
+distrib_cache_backend::handle_discourage_peer(const string& peerurl){
+    DIAG(_distrib_cache, "discourage_peer(" + peerurl + ")");
+    distrib_cache_stats.distc_discourages_recvd++;
+    if(peerurl == server_url){
+        // Can we use this to judge whether our peers are having
+        // trouble talking to us?  Can we use that in
+        // regular_maintenance to decide whether to announce ourselves
+        // to the world with send_present.
+        distrib_cache_stats.distc_self_discourages_recvd++;
+        return;
+    }
+    // If this log message appears ahead of "peer->be->refresh threw"
+    // messages, it's an indicator that we could/should have acted on
+    // the 'discourage'.
+    complain(LOG_WARNING, "handle_discourage_peer:  peer=%s.  Ignored", peerurl.c_str());
+#if 1
+    // Do nothing.  If peerurl is "bad", we'll find out for ourselves
+    // soon enough.
+    return;
+#else
+    // This code may get used one day.  But not until we've carefully
+    // evaluated the pros and cons.  If we remove the peer without
+    // checking then a misconfigured or overloaded node can convince
+    // us to avoid peers that are perfectly fine.  If we do check,
+    // then the same misconfigured node can initiate a thundering herd
+    // of checking - which, if we're already teetering - might push
+    // the whole network into an avalanche of failures.
+    //
+    // Note that neither false positives nor false negatives results
+    // for peer_is_down are terribly disruptive.  A false positive
+    // means we use the origin server for traffic that might have been
+    // successfully handled by the peer (but note that we already have
+    // a strong prior that the peer is down).  A false negative means
+    // we keep talking to the peer, and we'll eventually figure out
+    // that it's down, but our own clients will experience a delay
+    // that might have been avoided.
+    peer::sp peer = peer_map.lookup_peerurl(peerurl);
+    if(!peer)
+        return; // somebody removed it already
+    bool peer_is_down = false;
+    try{
+        req123 req("/p" + peer_handler_t::VERSION + "/p/uuid", req123::MAX_STALE_UNSPECIFIED);
+        reply123 reply;
+        timer tmr;
+        peer->be->refresh(req, &reply);
+        auto howlong = tmr.elapsed();
+        // if acceptable is too large, return false negatives
+        // if it's too small, return false positives
+        const auto acceptable = std::chrono::microseconds(100);
+        if( howlong > acceptable )
+            peer_is_down = true;
+        else
+            complain(LOG_WARNING, "not acting on discourage_peer(" + peerurl + ").  Peer is up.  Response time: " + str(howlong));
+    }catch(std::exception& e){
+        peer_is_down = true;
+    }
+
+    if(peer_is_down){
+        distrib_cache_stats.distc_discourages_enacted++;
+        peer_map.remove_url(peerurl);
+    }
+#endif
 }
 
-// It's frequently inconvenient for discourage_peer to throw (e.g.,
-// it's called from a destructor, or an exception handler).  Call
-// discourage_peer_noexcept instead.
 void
-distrib_cache_backend::discourage_peer_noexcept(const string& peer_url) const noexcept try {
-    discourage_peer(peer_url);
+distrib_cache_backend::send_present() const noexcept try {
+    DIAG(_distrib_cache, "send_present(" + server_url + ", scope=" + scope + ")");
+    str_view parts[3] = {str_view("P"), str_view(server_url), str_view(scope)};
+    distrib_cache_message::send(udp_fd, reflector_addr, &parts[0], &parts[3]);
+    distrib_cache_stats.distc_presents_sent++;
  }catch(std::exception& e){
-    complain(e, "discourage_peer_noexcept(" + peer_url + "): exception caught and ignored:");
+    complain(e, "send_present(): exception caught and ignored:");
  }
 
 void
-distrib_cache_backend::udp_listener() try {
+distrib_cache_backend::send_absent() const noexcept try {
+    DIAG(_distrib_cache, "send_absent(" + server_url + "), scope=" + scope);
+    str_view parts[3] = {str_view("A"), str_view(server_url), str_view(scope)};
+    distrib_cache_message::send(udp_fd, reflector_addr, &parts[0], &parts[3]);
+    distrib_cache_stats.distc_absents_sent++;
+ }catch(std::exception& e){
+    complain(e, "send_absent(""): exception caught and ignored:");
+ }
+
+void
+distrib_cache_backend::send_discourage_peer(const string& peer_url) const noexcept try {
+    DIAG(_distrib_cache, "send_discourage_peer(" + peer_url + "), scope=" + scope);
+    str_view parts[3] = {str_view("D"), str_view(peer_url), str_view(scope)};
+    distrib_cache_message::send(udp_fd, reflector_addr, &parts[0], &parts[3]);
+    distrib_cache_stats.distc_discourages_sent++;
+ }catch(std::exception& e){
+    complain(e, "send_discourage_peer(" + peer_url + "): exception caught and ignored:");
+ }
+
+void
+distrib_cache_backend::udp_listener() {
     struct pollfd pfds[1];
     pfds[0].fd = udp_fd;
     pfds[0].events = POLLIN;
-    while(!udp_done){
+    while(!udp_done) try {
         distrib_cache_message msg;
         // N.B.  we can't just call blocking recv because if no
         // messages arrive, we would never check udp_done.
@@ -442,12 +529,12 @@ distrib_cache_backend::udp_listener() try {
         }
         if(msg.parts[2] != scope){
             // FIXME - it would be nice to report what what we know about ports and IP addresses,
-            // but unfortunately, that's all now "hidden" inside msg.rec.
+            // but unfortunately, that's all now "hidden" inside msg.recv.
             complain(LOG_WARNING, "udp_listener: received message with incorrect scope. Got %s, expected %s. Is somebody else on our channel?",
                      msg.parts[2].data(), scope.c_str());
             continue;
         }
-        // N.B.  suggested_peer can take a long time.  It might have to wait
+        // N.B.  handle_present can take a long time.  It might have to wait
         // for a refresh on the new peer to time out.  We can spin up
         // yet another thread,  or we can live with it.  The consequences
         // of living with it are:
@@ -457,26 +544,28 @@ distrib_cache_backend::udp_listener() try {
         //     the http-timeout to shut down.
         // Neither of these seem worth adding more complexity to solve.
         switch(msg.parts[0][0]){
-        case 'P': suggested_peer(string(msg.parts[1])); break;
-        case 'A': discouraged_peer(string(msg.parts[1])); break;
-        case 'C': break;
+        case 'P': handle_present(string(msg.parts[1])); break;
+        case 'A': handle_absent(string(msg.parts[1])); break;
+        case 'D': handle_discourage_peer(string(msg.parts[1])); break;
         default:
             complain("udp_listener: garbled msg: " + strbe(msg.parts));
             break;
         }
+    }catch(std::exception& e){
+        complain(e, "exception thrown in udp_listener loop.  Continuing...");
+        continue;
     }
-    complain(LOG_NOTICE, "udp_listener shutting down cleanly with udp_done true");
- }catch(std::exception& e){
-    complain(e, "udp_listener:  returning on exception.  No longer listening for peer discovery messages.");
-    throw; // will be caught by udp_future.get() in ~distrib_cache_backend.
+    complain(LOG_NOTICE, "udp_listener shutting down cleanly with udp_done = %d (should be true)", udp_done.load());
  }
 
 void
 peer_handler_t::p(req::up req, uint64_t etag64, istream&) try {
-    string url = urlescape(req->path_info);
+    string versioned_url = urlescape(req->path_info);
+    if(!startswith(versioned_url, VERSION))
+        return exception_reply(move(req), http_exception(400, "Incorrect /p/sub-version"));
     if(req->query.data()) // req->query is non-null.  It might still be 0-length
-        url += "?" + string(req->query);
-    req123 myreq(url, req123::MAX_STALE_UNSPECIFIED);
+        versioned_url += "?" + string(req->query);
+    req123 myreq(versioned_url.substr(VERSION.size()), req123::MAX_STALE_UNSPECIFIED);
     myreq.no_peer_cache = true;
     reply123 reply123;
     if(etag64){
