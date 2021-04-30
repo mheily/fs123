@@ -113,6 +113,7 @@
 #include "backend123_http.hpp"
 #include "volatiles.hpp"
 #include "fs123/fs123server.hpp"
+#include "fs123/sharedkeydir.hpp"
 #include <core123/threeroe.hpp>
 #include <core123/http_error_category.hpp>
 #include <core123/sew.hpp>
@@ -138,6 +139,8 @@
     STATISTIC(distc_discourages_recvd) \
     STATISTIC(distc_self_discourages_recvd) \
     STATISTIC(distc_peer_errors) \
+    STATISTIC(distc_delayed_packets) \
+    STATISTIC(distc_recvd_errors) \
     STATISTIC(distc_server_refreshes)   \
     STATISTIC(distc_server_refresh_not_modified) \
     STATISTIC_NANOTIMER(distc_server_refresh_sec) \
@@ -368,6 +371,7 @@ private:
 
 struct distrib_cache_backend : public backend123{
     distrib_cache_backend(backend123* _upstream_backend, backend123* _server_backend, const std::string& scope,
+                          secret_manager* secret_manager,
                           core123::addrinfo_cache& aicache, volatiles_t& volatiles);
     virtual ~distrib_cache_backend();
     bool refresh(const req123&, reply123*) override;
@@ -395,12 +399,13 @@ struct distrib_cache_backend : public backend123{
     std::string get_uuid() override { return server_backend->get_uuid(); }
     void regular_maintenance();
     friend class peer_handler_t;
+    friend struct distrib_cache_message;
 private:
     backend123* upstream_backend;
     backend123* server_backend;
     std::string scope;
     peer_map_t peer_map;
-    peer_handler_t peer_handler;
+    std::unique_ptr<peer_handler_t> peer_handler;
     std::unique_ptr<fs123p7::server> myserver;
     std::string server_url;
     std::future<void> server_future;
@@ -413,5 +418,6 @@ private:
     struct sockaddr_in reflector_addr;
     void initialize_reflector_addr(const std::string&);
     bool multicast_loop;
+    secret_manager* secret_mgr;
 };
 

@@ -26,6 +26,7 @@ using secret_sp = std::shared_ptr<secret_t>;
 
 struct secret_manager {
     virtual std::string get_encode_sid() = 0;
+    virtual std::string get_indirect_sid(const std::string& name) = 0;
     virtual secret_sp get_sharedkey(const std::string& sid) = 0;
     virtual void regular_maintenance(){}
     virtual std::ostream& report_stats(std::ostream& os){return os;}

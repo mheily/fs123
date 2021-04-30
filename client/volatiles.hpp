@@ -62,6 +62,13 @@ struct volatiles_t{
     std::atomic<size_t> dc_maxmbytes{core123::envto<size_t>("Fs123CacheMaxMBytes", 100)};
     std::atomic<size_t> dc_maxfiles{core123::envto<size_t>("Fs123CacheMaxFiles", dc_maxmbytes*1000000/16384)};
 
+    // Used in distrib_cache_backend.cpp
+    std::atomic<unsigned> multicast_timestamp_skew{core123::envto<unsigned>("Fs123MulticastTimestampSkew", 10)};
+    // These are const because we don't want to "accidentally" change them without
+    // checking that the secret_manager is non-null.
+    const std::atomic<bool> authenticate_multicast{core123::envto<bool>("Fs123AuthenticateMulticast", false)};
+    // see comment in app_mount.cpp about reject_unencrypted_replies
+    const std::atomic<bool> reject_untrusted_multicast{core123::envto<bool>("Fs123RejectUntrustedMulticast", authenticate_multicast)};
 
     // things we measure from time to time about our
     // current "environment":

@@ -131,6 +131,15 @@
 // side - it doesn't add many microseconds of formatting overhead to
 // every request.
 
+// The 'get_secret_manager' callback returns a secret_manager* (see
+// secret_manager.hpp).  It is called once by the server's constructor
+// and the result is saved.  If it returns a nullptr, the server is
+// unable to send or receive encrypted data.  If it is non-null, the
+// object pointed to will be used to obtain secrets for encrypting and
+// decrypting messages using the 'secretbox' protocol.  A non-null
+// get_secret_manager() must remain valid for the lifetime of the
+// server.
+
 // Short-circuiting HEAD requests is up to the handler.  I.e., the
 // handler *may* look at the req::method field, and call f_reply,
 // d_reply or p_reply with empty data arguments.  Even if the handler

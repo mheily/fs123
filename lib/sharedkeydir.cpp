@@ -16,12 +16,19 @@ sharedkeydir::sharedkeydir(int dirfd_, const std::string& encode_sid_indirect_, 
     dirfd(dirfd_),
     encode_sid_indirect(encode_sid_indirect_),
     secret_cache(10),
+    indirect_cache(10),
     refresh_time(std::chrono::seconds(refresh_sec))
 {
     if(!legal_sid(encode_sid_indirect))
         throw std::runtime_error("sharedkeydir::sharedkeydir:  encode_sid_indirect: '" + encode_sid_indirect + "' is not a legal sid name.");
 }
 
+#if 1
+std::string
+sharedkeydir::get_encode_sid() /*override*/{
+    return get_indirect_sid(encode_sid_indirect);
+}
+#else
 std::string
 sharedkeydir::get_encode_sid() /*override*/{
     std::lock_guard<std::mutex> lg(mtx);
@@ -29,6 +36,19 @@ sharedkeydir::get_encode_sid() /*override*/{
         return encode_sid;
     std::string ret = refresh_encode_sid();
     encode_sid = expiring<std::string>(refresh_time, ret);
+    return ret;
+}
+#endif
+
+std::string
+sharedkeydir::get_indirect_sid(const std::string& name) /*override*/{
+    if(!legal_sid(name))
+        throw std::runtime_error("sharedkeydir::get_sharedkey:  sid: '" + name + "' contains illegal characters");;
+    auto exsid = indirect_cache.lookup(name);
+    if(!exsid.expired())
+        return exsid;
+    auto ret = refresh_indirect(name);
+    indirect_cache.insert(name, ret, refresh_time);
     return ret;
 }
 
@@ -53,6 +73,7 @@ sharedkeydir::regular_maintenance() /*override*/{
     // de-allocated with sodium_free , which *should* zero out memory
     // before putting it back on the heap.
     secret_cache.erase_expired();
+    indirect_cache.erase_expired();
 }
 
 secret_sp
@@ -84,6 +105,28 @@ sharedkeydir::refresh_secret(const std::string& sid) /*private*/{
 }
 
 std::string
+sharedkeydir::refresh_indirect(const std::string& name) /*private*/{
+    // The sid is in the file called <dirname>/<name>.keyid
+    if(!legal_sid(name))
+        throw std::runtime_error("sharedkeydir::refresh_indirect:  name: '" + name + "' contains illegal characters");
+    auto fname = name + ".keyid";
+    acfd fd = sew::openat(dirfd, fname.c_str(), O_RDONLY);
+    boost::fdistream ifs(fd);
+    std::string sid;
+    // Are we ok with ifs >> string?  I.e., allowing leading and
+    // trailing whitespace?  Ignoring extra "stuff" after the first
+    // word?
+    std::string ret;
+    ifs >> ret;
+    if(!ifs)
+        throw std::runtime_error("Error reading from " + fname);
+    if(!legal_sid(ret))
+       throw std::runtime_error("Illegal sid: '" + sid + "' in " + fname);
+    return ret;
+}
+
+#if 0
+std::string
 sharedkeydir::refresh_encode_sid() /*private*/{
     if(encode_sid_indirect.empty())
         throw std::runtime_error("sharedkey::refresh_encode_sid: encod_sid_indirect is empty");
@@ -102,6 +145,7 @@ sharedkeydir::refresh_encode_sid() /*private*/{
        throw std::runtime_error("Illegal sid: '" + sid + "' in " + fname);
     return ret;
 }
+#endif
 
 std::ostream&
 sharedkeydir::report_stats(std::ostream& os){

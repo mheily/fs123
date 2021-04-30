@@ -143,10 +143,11 @@ clientopts+=" -oFs123SupportXattr=true"
 clientopts+=" -oFs123ProtoMinor=$ProtoMinor"
 # It's important to test with encryption turned on, but it's much harder
 # to make sense of the logs when debugging.  To turn off encryption, comment
-# out the next three lines (and see below for lines to comment out in the server config)
+# out the next four lines (and see below for lines to comment out in the server config)
 clientopts+=" -oFs123Sharedkeydir=$RCroot/secrets.d"
 clientopts+=" -oFs123SharedkeydirRefresh=1"
 clientopts+=" -oFs123EncryptRequests=true"
+clientopts+=" -oFs123DecryptReplies=true"
 clientopts+=" -oFs123LogMinLevel=LOG_NOTICE"
 clientopts+=" -oFs123DiagDestination=$MTroot/fs123.diag"
 clientopts+=" -oFs123DiagNames=complaints:err"

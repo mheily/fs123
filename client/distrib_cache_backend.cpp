@@ -3,12 +3,14 @@
 #include <core123/strutils.hpp>
 #include <core123/diag.hpp>
 #include <core123/scoped_timer.hpp>
+#include <core123/non_null_or_throw.hpp>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netdb.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <poll.h>
+#include <sodium.h>
 
 // N.B.  It's confusing.  Extensive comments are in distrib_cache_backend.hpp.
 
@@ -28,100 +30,241 @@ auto _shutdown = diag_name("shutdown");
 
 distrib_cache_statistics_t distrib_cache_stats;
 
-namespace {
-
 // distrib_cache_message:  encapsulate some of the details of sending, receiving
 // and "parsing" udp messages.  It's still *very* raw, but maybe better than
 // just having this code inline.  "Messages" are concatenations of NUL-terminated
 // strings.  They're (currently) limited to 512 bytes.
 
-// To send a message, we take a [begin, end) collection of string_view's
-// and bundle them up for sendmsg, making sure to NUL-terminate each one.
-//
+// To send a message, we take a [begin, end) collection of
+// string_view's and bundle them up for sendmsg, making sure to
+// NUL-terminate each one.  We stick a version, 'scope' and a
+// 'secretid' at the front and a binary timestamp and an hmac at the
+// end.  The version=2 looks something like this:
+
+//    '2' \0 scope \0 sid \0 part[0] \0 ... part[n-1] \0 tstamp(8) hmac(32)
+
+// If the message is authenticated, then the sid is non-empty and the
+// hmac is non-zero.  Otherwise, the sid is empty and the hmac is all
+// zeros.  So in either case, it's a sequence of NUL-terminated strings
+// followed by a 40 bytes of authentication.  The timestamp is used to
+// reject "replay attacks".  
+
 // To receive a message, we instantiate an empty distrib_cache_message
-// and call its 'recv' method.  After which, the 'parts' member is a
-// vector of str_views to a local copy of the sender's NUL-terminated
-// str_views.
+// and call its 'recv' method.  The recv method checks version, scope,
+// timestamp and hmac, and if all are good, it fills the 'parts'
+// member with str_views that point into a copy the received message.
 //
-// N.B.  We're breaking our standing rule about exceptions here: recv
-// *only* throw an exception when the fd itself looks completely
-// borked.  If the only problem is garbled data, e.g., missing NULs,
-// or an incorrect version prefix, it just complains and returns with
-// an empty 'parts'.
+// Note that recv returns a bool which is true when the incoming
+// message has been successfully parsed into 'parts'.  When recv
+// encounters an "expected" error, it calls 'complain' and returns
+// false with 'parts' empty.  When it encounters an 'unexpected'
+// error, it throws an exception and 'parts' is undefined.
+
 struct distrib_cache_message{
+    // VERSION is semantically just a string that either matches or doesn't.
+    // It's easy to manage if we keep it numeric.
+    static constexpr str_view VERSION{"2"};
+    // Permitted timestamp skew (in milliseconds).  Should these be configurable??
+    const int64_t skew_wide_window = 30000; // 30 seconds
+    const int64_t skew_narrow_window = 2000; // 2 seconds
+
     std::array<char,512> data;
     std::vector<core123::str_view> parts;
-    // VERSION is semantically just a string that either matches or doesn't.
-    // But it's easier to think about if we keep it numeric.
-    static constexpr str_view VERSION{"1"};
+    const distrib_cache_backend& dbe;
+    distrib_cache_message(const distrib_cache_backend& _dbe):
+        dbe(_dbe)
+    {}
     template <typename ITER>
-    static void send(int sockfd, const struct sockaddr_in& dest, ITER b, ITER e);
-    void recv(int fd);
+    void send(int sockfd, const struct sockaddr_in& dest, ITER b, ITER e);
+    bool recv(int fd);
+private:
+    // Some methods for walking over the data.  wxxx members are for
+    // writing, rxxx members are for reading.  Have we just
+    // re-implemented rdbufs?
+    char *_wptr = &data[0];
+    char *wptr() const {
+        return  _wptr;
+    }
+    size_t wlen() const {
+        return _wptr - &data[0];
+    }
+    char* wptr(size_t need){
+        if(wlen() + need > data.size())
+            throw std::runtime_error("out of space");
+        auto ret = _wptr;
+        _wptr += need;
+        return ret;
+    }
+    void wpush(str_view sv){
+        DIAG(_distrib_cache, "wpush(" + std::string(sv) + ")");
+        char* to = wptr(sv.size()+1);
+        ::memcpy(to, sv.data(), sv.size());
+        to[sv.size()] = '\0';
+    }
+
+    char *_rptr = &data[0];
+    char *_rendptr = &data[0];
+    char* rptr() const {
+        return _rptr;
+    }
+    char* rendptr() const {
+        return _rendptr;
+    }
+    str_view rpop() {
+        if(_rptr >= _rendptr)
+            throw std::runtime_error("rpop: past last word");
+        char *nextnul = std::find(_rptr, _rendptr, '\0');
+        str_view ret{_rptr, size_t(nextnul - _rptr)};
+        _rptr = nextnul + 1;
+        return ret;
+    }
+
+    void set_rptrs(size_t recvd){
+        // Note that we haven't checked the version yet, but if there
+        // aren't even enough bytes for a tstamp and an hmac, then
+        // it doesn't matter what the version is.  Whatever
+        // it is - it's not meant for *us*.
+        if( recvd < sizeof(int64_t) + crypto_auth_BYTES + 1 )
+            throw std::runtime_error("message too short");
+        _rendptr = &data[recvd] - sizeof(int64_t) - crypto_auth_BYTES;
+        if( _rendptr[-1] != '\0' )
+            throw std::runtime_error("words don't end with NUL");
+    }
+
+    // use millisecond-resolution system-clock for timestamps.
+    static int64_t now_millis(){
+        using namespace std::chrono;
+        return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+    }
+
 };
 
 template <typename ITER>
-/*static */
 void
 distrib_cache_message::send(int sockfd, const struct sockaddr_in& dest,
                  ITER b, ITER e){
-    char zero = '\0';
-    struct msghdr msghdr = {};
-    msghdr.msg_name = (void*)&dest;
-    msghdr.msg_namelen = sizeof(struct sockaddr_in);
-    msghdr.msg_iovlen = 1 + 2*(e-b);
-    struct iovec iov[msghdr.msg_iovlen];
-    iov[0].iov_base = const_cast<char*>(VERSION.data());
-    iov[0].iov_len = VERSION.size()+1; // including the NUL
-    msghdr.msg_iov = iov;
-    int i=1;
-    while(b != e){
-        iov[i].iov_base = const_cast<char*>(b->data());
-        iov[i].iov_len = b->size();
-        iov[i+1].iov_base = &zero;
-        iov[i+1].iov_len = 1;
-        i+=2;
-        b++;
+    wpush(VERSION);
+    wpush(dbe.scope);
+    std::string sid;
+    secret_sp key;
+    if(dbe.vols.authenticate_multicast){
+        non_null_or_throw(dbe.secret_mgr);
+        sid = dbe.secret_mgr->get_indirect_sid("multicast");
+        DIAG(_distrib_cache, "send:  sid=" + sid);
+        key = dbe.secret_mgr->get_sharedkey(sid);
+        if(key->size() < crypto_auth_KEYBYTES) // crypto_auth_KEYBYTES == 32
+            throw std::runtime_error("key found, but it's too short to be used in crypto_auth");
+        DIAG(_distrib_cache, "send: key=" + quopri(str_view((char*)key->data(), crypto_auth_KEYBYTES)));
     }
-    core123::sew::sendmsg(sockfd, &msghdr, 0);
+    wpush(sid);
+    while(b != e)
+        wpush(*b++);
+    int64_t tstamp = now_millis();
+    ::memcpy(wptr(sizeof(tstamp)), &tstamp, sizeof(tstamp));
+    char *hmac = wptr(crypto_auth_BYTES); // crypto_auth_BYTES == 32
+    if(key){
+        crypto_auth((unsigned char*)hmac, (unsigned char*)&data[0], hmac-&data[0], key->data());
+    }else{
+        ::memset(hmac, 0, crypto_auth_BYTES);
+    }
+    DIAG(_distrib_cache, "sendto(len=" + str(wlen()) + "): " + quopri(str_view{&data[0], wlen()}));
+    core123::sew::sendto(sockfd, &data[0], wlen(), 0, (const sockaddr*)&dest, sizeof(dest));
 }
 
-void distrib_cache_message::recv(int fd){
+bool distrib_cache_message::recv(int fd){
+    // See above for the "format".
+
+    // + check that we're not re-using *this
     using namespace core123;
     if(!parts.empty())
         throw std::logic_error("distrib_cache_messages::recv:  may only be called once");
-    // MSG_DONTWAIT may be superfluous because we've just poll'ed,
-    // but it shouldn't do any harm, and protects us against
+
+    // + read a message.  check for os-level errors.
+    // MSG_DONTWAIT may be superfluous because we've just poll'ed, but
+    // it shouldn't do any harm, and protects if poll is subject to
     // "spurious" wakeups (can that happen?)
     auto recvd = ::recv(fd, data.data(), data.size(), MSG_DONTWAIT|MSG_TRUNC);
     if(recvd < 0){
-        if(errno == EAGAIN)
-            return complain(LOG_WARNING, "udp_listener:  unexpected EAGAIN from recv(MSG_DONTWAIT)");
+        if(errno == EAGAIN){
+            complain(LOG_WARNING, "udp_listener:  unexpected EAGAIN from recv(MSG_DONTWAIT)");
+            return false;
+        }
         throw se("recv(udp_fd) in udp_listener");
     }
-    if(recvd == 0)
-        return complain(LOG_WARNING, "distrib_cache_messages::recv:  empty message");
-    if(size_t(recvd) > data.size()) // see MSG_TRUNC
-        return complain(LOG_WARNING, "distrib_cache_message::recv:  message is too long.  Treating as empty");
-    if(data[recvd-1] != '\0')
-        return complain(LOG_WARNING, "distrib_cache_message::recv:  message is not NUL-terminated.  Treating as empty.");
-    // check the version, but don't include it in 'parts'
-    str_view version{&data[0]}; // we just checked that data is NUL-terminated
+    if(recvd == 0){
+        complain(LOG_WARNING, "distrib_cache_messages::recv:  empty message");
+        return false;
+    }
+    if(size_t(recvd) > data.size()){ // see MSG_TRUNC
+        complain(LOG_WARNING, "distrib_cache_message::recv:  message is too long.  Treating as empty");
+        return false;
+    }
+
+    DIAG(_distrib_cache, "recv(len=" + str(recvd) + "): " + quopri(str_view{&data[0], size_t(recvd)}));
+    // + initialize rptr() and rendptr() so that we can safely use 'rpop'.
+    set_rptrs(recvd);
+
+    // + check the version.
+    str_view version = rpop();
     // As in diskcache.cpp, a bad version/magic number is reported
     // with severity LOG_NOTICE.  It's typical to get a large number
     // of these when upgrading the software version of machines on a
-    // network, and there's cross-talk between old and new code.
-    if(version != VERSION)
-        return complain(LOG_NOTICE, "distrib_cache_message::recv:  incorrect version");
-    
-    parts.reserve(3); // we're expecting 3
-    char *b = &data[version.size()+1];
-    char *e = &data[recvd];
-    while(b < e){
-        char* nextnul = std::find(b, e, '\0');
-        parts.push_back(str_view(b, nextnul-b)); // N.B.  The NUL isn't *in* the str_view, but it's guaranteed to follow it.
-        b = nextnul+1;
+    // network from cross-talk between old and new code.
+    if(version != VERSION){
+        complain(LOG_NOTICE, "distrib_cache_message::recv:  incorrect version");
+        return false;
     }
+
+    // check the scope.
+    str_view msg_scope = rpop();
+    if(msg_scope != dbe.scope){
+        complain(LOG_WARNING, "distrib_cache_message::recv: unexpected scope.  Is somebody on our multicast channel?");
+        return false;
+    }
+
+    // + check the timestamp: if it's outside a very generous window,
+    //     return/complain about skewed clocks or possible replay
+    //     attack.  If it's outside a narrow window, warn and return
+    //     with an empty parts.
+    int64_t tstamp;
+    ::memcpy(&tstamp, rendptr(), sizeof(tstamp));
+    int64_t now = now_millis();
+    int64_t absdelta = abs(now - tstamp);
+    if( absdelta > dbe.vols.multicast_timestamp_skew * 1000 ){
+        // Don't cut this too thin.  See the comment in udp_listener
+        // about handlers that take a long time.
+        distrib_cache_stats.distc_delayed_packets++;
+        throw std::runtime_error(fmt("unacceptable timestamp: %.3f, now: %.3f.  Clock skew?  Corrupted data?  Badly delayed listener loop? Replay attack?",
+                                     now*1.e-3, tstamp*1.e-3));
+    }
+    
+    // + read the sid, look it up and verify the hmac.
+    str_view sid = rpop();
+    if(dbe.vols.reject_untrusted_multicast){
+        char *msg_hmac = rendptr() + sizeof(tstamp);
+        auto key = deref_or_throw(dbe.secret_mgr).get_sharedkey(std::string{sid});
+        if(key->size() < crypto_auth_KEYBYTES)
+            throw std::runtime_error("key found, but it's too short to be used in crypto_auth");
+        if(crypto_auth_verify((unsigned char*)msg_hmac, (unsigned char*)&data[0], msg_hmac-&data[0], key->data()) != 0)
+            throw std::runtime_error("crypto_auth_verify failed.  Data corruption?  Forgery?");
+    }
+    // if we're not configured to reject_untrusted_multicast, we could
+    // still use the the 32 bytes of hmac as a checksum to detect
+    // network corruption.  E.g., we could put a 16-byte threeroe in
+    // the hmac?  Or we could compute a libsodium hmac with a
+    // non-secret key (all zeros?  the version?).  It doesn't protect
+    // us from an MitM, but it does protect us from network
+    // corruption.
+    
+    // SUCCESS!!
+    // + copy the remaining words into 'parts'
+    parts.reserve(2); // we're expecting 2
+    while(rptr() < rendptr())
+        parts.push_back(rpop());
+    return true;
 }
+
+namespace {
 
 bool is_multicast(const sockaddr_in& sai){
     return (ntohl(sai.sin_addr.s_addr)>>28 == 14); // 224.X.X.X through 239.X.X.X, top 4 bits are 1110
@@ -137,19 +280,27 @@ string cache_control(const reply123& r) {
 } // namespace <anon>
 
 distrib_cache_backend::distrib_cache_backend(backend123* upstream, backend123* server, const std::string& _scope,
+                                             secret_manager* _secret_mgr,
                                              addrinfo_cache& _aicache, volatiles_t& volatiles) :
     upstream_backend(upstream),
     server_backend(server),
     scope(_scope),
-    peer_handler(*this),
     aicache(_aicache),
-    vols(volatiles)
+    vols(volatiles),
+    secret_mgr(_secret_mgr)
 {
     // - instantiate an fs123p7::server.
+    DIAG(_distrib_cache, "distrib_cache_backend(scope=" + scope + ")");
     option_parser op;
     server_options sopts(op); // most of the defaults are  fine?
     op.set("bindaddr", "0.0.0.0");
-    myserver = make_unique<fs123p7::server>(sopts, peer_handler);
+    // op.set("allow_unencrypted_requests", "true"); // if we want to encrypt the client-peer channel
+    // Note that this *should* makes deref_or_throw and non_null_or_throw superfluous,
+    // but use them anyway just in case somebody changes vols.xxx behind our back.
+    if(!secret_mgr && (vols.authenticate_multicast || vols.reject_untrusted_multicast))
+        throw std::runtime_error("authenticated multicast enabled, but the secret_manager is NULL.");
+    peer_handler = std::make_unique<peer_handler_t>(*this);
+    myserver = make_unique<fs123p7::server>(sopts, *peer_handler);
     server_url = myserver->get_baseurl();
     sockaddr_in sain = myserver->get_sockaddr_in();
     char sockname[INET_ADDRSTRLEN];
@@ -227,6 +378,8 @@ distrib_cache_backend::regular_maintenance() try {
     // consider whether there have recently been 'discouraging' 
     // messages about us.
     send_present();
+    if(secret_mgr)
+        secret_mgr->regular_maintenance();
  }catch(exception& e){
     complain(e, "Exception thrown by distib_cache_backend::regular_maintenance:");
  }
@@ -364,10 +517,6 @@ distrib_cache_backend::handle_present(const string& peerurl){
     reply123 rep;
     unique_ptr<backend123_http> be;
     try{
-        // accept_encodings is empty.  We make '/p' requests and get
-        // uninterpreted binary data back.  The data *may* have an
-        // encoding, but we're oblivious to that, and we don't want
-        // another layer of encryption or encoding added.
         be = make_unique<backend123_http>(add_sigil_version(peerurl), "",
                                           aicache, vols, backend123_http::distrib_cache);
         // Get the uuid, which also checks connectivity.
@@ -479,9 +628,10 @@ distrib_cache_backend::handle_discourage_peer(const string& peerurl){
 
 void
 distrib_cache_backend::send_present() const noexcept try {
-    DIAG(_distrib_cache, "send_present(" + server_url + ", scope=" + scope + ")");
-    str_view parts[3] = {str_view("P"), str_view(server_url), str_view(scope)};
-    distrib_cache_message::send(udp_fd, reflector_addr, &parts[0], &parts[3]);
+    DIAG(_distrib_cache, "send_present(" + server_url + ")");
+    distrib_cache_message msg{*this};
+    str_view parts[2] = {str_view("P"), str_view(server_url)};
+    msg.send(udp_fd, reflector_addr, &parts[0], &parts[2]);
     distrib_cache_stats.distc_presents_sent++;
  }catch(std::exception& e){
     complain(e, "send_present(): exception caught and ignored:");
@@ -489,9 +639,10 @@ distrib_cache_backend::send_present() const noexcept try {
 
 void
 distrib_cache_backend::send_absent() const noexcept try {
-    DIAG(_distrib_cache, "send_absent(" + server_url + "), scope=" + scope);
-    str_view parts[3] = {str_view("A"), str_view(server_url), str_view(scope)};
-    distrib_cache_message::send(udp_fd, reflector_addr, &parts[0], &parts[3]);
+    DIAG(_distrib_cache, "send_absent(" + server_url + ")");
+    distrib_cache_message msg{*this};
+    str_view parts[2] = {str_view("A"), str_view(server_url)};
+    msg.send(udp_fd, reflector_addr, &parts[0], &parts[2]);
     distrib_cache_stats.distc_absents_sent++;
  }catch(std::exception& e){
     complain(e, "send_absent(""): exception caught and ignored:");
@@ -499,9 +650,10 @@ distrib_cache_backend::send_absent() const noexcept try {
 
 void
 distrib_cache_backend::send_discourage_peer(const string& peer_url) const noexcept try {
-    DIAG(_distrib_cache, "send_discourage_peer(" + peer_url + "), scope=" + scope);
-    str_view parts[3] = {str_view("D"), str_view(peer_url), str_view(scope)};
-    distrib_cache_message::send(udp_fd, reflector_addr, &parts[0], &parts[3]);
+    DIAG(_distrib_cache, "send_discourage_peer(" + peer_url + ")");
+    distrib_cache_message msg{*this};
+    str_view parts[2] = {str_view("D"), str_view(peer_url)};
+    msg.send(udp_fd, reflector_addr, &parts[0], &parts[2]);
     distrib_cache_stats.distc_discourages_sent++;
  }catch(std::exception& e){
     complain(e, "send_discourage_peer(" + peer_url + "): exception caught and ignored:");
@@ -513,25 +665,23 @@ distrib_cache_backend::udp_listener() {
     pfds[0].fd = udp_fd;
     pfds[0].events = POLLIN;
     while(!udp_done) try {
-        distrib_cache_message msg;
+        distrib_cache_message msg{*this};
         // N.B.  we can't just call blocking recv because if no
         // messages arrive, we would never check udp_done.
         if(sew::poll(pfds, 1, 100) == 0)
             continue; // check udp_done if quiet for 100msec.
-        msg.recv(udp_fd);
-        // messages have three parts:
-        //   parts[0]: A command, either 'P'resent, 'A'bsent' or 'C'heck
+        if(!msg.recv(udp_fd))
+            continue; // assume msg.recv already complained
+
+        // version 2 messages have two parts:
+        //   parts[0]: A command, either 'P'resent, 'A'bsent' or 'D'iscourage
         //   parts[1]: A URL
-        //   parts[2]: The scope of the sender (to avoid crosstalk);
-        if(msg.parts.size() != 3){
-            complain("udp_listener: garbled msg with %zd NUL-terminated parts (expected 3)", msg.parts.size());
+        if(msg.parts.size() != 2){
+            complain("udp_listener: expected exactly 2 parts.  Got %zd", msg.parts.size());
             continue;
         }
-        if(msg.parts[2] != scope){
-            // FIXME - it would be nice to report what what we know about ports and IP addresses,
-            // but unfortunately, that's all now "hidden" inside msg.recv.
-            complain(LOG_WARNING, "udp_listener: received message with incorrect scope. Got %s, expected %s. Is somebody else on our channel?",
-                     msg.parts[2].data(), scope.c_str());
+        if(msg.parts[0].size() != 1){
+            complain("udp_listener: expected a single-letter parts[0].  Got: " + strbe(msg.parts));
             continue;
         }
         // N.B.  handle_present can take a long time.  It might have to wait
@@ -542,16 +692,20 @@ distrib_cache_backend::udp_listener() {
         //     to other peers coming and going.
         //  b) when a peer is flakey, it might take us approximately
         //     the http-timeout to shut down.
-        // Neither of these seem worth adding more complexity to solve.
+        //  c) we might be stuck for long enough that the next udp
+        //     packet appears to be coming from the past.  We'll reject
+        //     it with an error in the next msg.recv().
+        // None of these seem worth adding more complexity to solve.
         switch(msg.parts[0][0]){
         case 'P': handle_present(string(msg.parts[1])); break;
         case 'A': handle_absent(string(msg.parts[1])); break;
         case 'D': handle_discourage_peer(string(msg.parts[1])); break;
         default:
-            complain("udp_listener: garbled msg: " + strbe(msg.parts));
+            complain("udp_listener: unexpected msg.parts[0]: " + strbe(msg.parts));
             break;
         }
     }catch(std::exception& e){
+        distrib_cache_stats.distc_recvd_errors++;
         complain(e, "exception thrown in udp_listener loop.  Continuing...");
         continue;
     }
@@ -615,3 +769,16 @@ peer_handler_t::p(req::up req, uint64_t etag64, istream&) try {
     // don't pass 'e' to exception_reply.  It will just issue the same complaint again, to no useful purpose.
     exception_reply(move(req), http_exception(500, "distrib_cache_backend::peer_handler::p:  Client will see 500 and will discourage others from connecting to us."));
  }
+
+#if 0
+// Implementing these two functions would allow us to encrypt the
+// client-peer channel.
+void distrib_cache_backend::decode_reply(const reply123&){
+}
+
+secret_manager*
+peer_handler_t::get_secret_manager() /*override*/{
+    //return be.secret_mgr.get();
+    return nullptr;
+}
+#endif

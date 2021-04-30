@@ -61,6 +61,7 @@ struct sharedkeydir : public secret_manager{
 public:
     sharedkeydir(int dirfd, const std::string& encoding_sid_indirect, unsigned refresh_sec);
     std::string get_encode_sid() override;
+    std::string get_indirect_sid(const std::string& name) override;
     secret_sp get_sharedkey(const std::string& sid) override;
     void regular_maintenance() override;
     std::ostream& report_stats(std::ostream&) override;
@@ -70,9 +71,11 @@ private:
     core123::expiring<std::string> encode_sid;
     int dirfd;
     std::string encode_sid_indirect;
-    core123::expiring_cache<std::string, secret_sp> secret_cache;
+    core123::expiring_cache<std::string, secret_sp> secret_cache;  // maps sid -> secret
+    core123::expiring_cache<std::string, std::string> indirect_cache; // maps name -> sid
     std::chrono::system_clock::duration refresh_time;
 
     secret_sp refresh_secret(const std::string& sid);
+    std::string refresh_indirect(const std::string& name);
     std::string refresh_encode_sid();
 };

@@ -49,6 +49,7 @@ int complain(){
         " CacheMaxFiles\n"
         " InvalidateInode\n"
         " MaintenanceInterval\n"
+        " MulticastTimestampSkew\n"
         ;
     return 1;
 }
@@ -157,6 +158,8 @@ int app_ctl(int argc, char **argv) try {
         ioc = INVALIDATE_INODE_IOC;
     }else if(cmd == "MaintenanceInterval"){
         ioc = MAINTENANCE_INTERVAL_IOC;
+    }else if(cmd == "MulticastTimestampSkew"){
+        ioc = MULTICAST_TIMESTAMP_SKEW_IOC;
     }else{
         fprintf(stderr, "Unrecognized command: %s\n", cmd.c_str());
         return complain();

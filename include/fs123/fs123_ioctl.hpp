@@ -46,5 +46,6 @@ struct fs123_ioctl_data{
 #define NO_VERIFY_HOST_IOC _IOW(0, 134, fs123_ioctl_data)
 #define SO_RCVBUF_IOC _IOW(0, 135, fs123_ioctl_data)
 #define NAMECACHE_SIZE_IOC _IOW(0, 136, fs123_ioctl_data)
+#define MULTICAST_TIMESTAMP_SKEW_IOC _IOW(0, 137, fs123_ioctl_data)
 
 #endif
