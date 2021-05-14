@@ -64,6 +64,7 @@ DOCUMENTATION_END*/
 #include <memory>
 #include <sstream>
 #include <iterator>
+#include <optional>
 #include <type_traits>
 #include <fstream>
 #include <limits>
@@ -239,6 +240,17 @@ struct insertone<long double>{
     }
 };
 
+// insert(std::optional) inserts either the underlying object or "<unset>"
+template<typename T>
+struct insertone<std::optional<T>>{
+    static std::ostream& ins(std::ostream& os, const std::optional<T>& t){
+        if(t)
+            return insertone<T>::ins(os, *t);
+        else
+            return os << "<unset>";
+    }
+};
+    
 
 namespace detail{
 
