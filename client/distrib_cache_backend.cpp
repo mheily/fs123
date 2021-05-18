@@ -295,6 +295,7 @@ distrib_cache_backend::distrib_cache_backend(backend123* upstream, backend123* s
     server_options sopts(op); // most of the defaults are  fine?
     op.set("bindaddr", "0.0.0.0");
     // op.set("allow_unencrypted_requests", "true"); // if we want to encrypt the client-peer channel
+    op.setopts_from_defaults();
     // Note that this *should* makes deref_or_throw and non_null_or_throw superfluous,
     // but use them anyway just in case somebody changes vols.xxx behind our back.
     if(!secret_mgr && (vols.authenticate_multicast || vols.reject_untrusted_multicast))
