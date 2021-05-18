@@ -1,6 +1,8 @@
 #pragma once
 #include <string>
 #include <cstdlib>
+#include <optional>
+#include <core123/traits.hpp>
 #include <core123/svto.hpp>
 #include <core123/throwutils.hpp>
 
@@ -21,16 +23,24 @@ T envto(const char *name, const T& dflt){
 template <typename T>
 T envto(const char *name){
     const char *e=::getenv(name);
-    if(e)
-        return svto<T>(std::string(e));
-    else
-        throw core123::se(EINVAL, core123::strfunargs("envto", name));
+    if constexpr (is_std_optional<T>::value){
+        if(e)
+            return svto<typename T::value_type>(std::string(e));
+        else
+            return {};
+    }else{
+        if(e)
+            return svto<T>(std::string(e));
+        else
+            throw core123::se(EINVAL, core123::strfunargs("envto", name));
+    }
 }
 
 // specialize envto<std::string> to return the whole string.
 // DO NOT stop at the first whitespace.
 template<>
-inline std::string envto<std::string>(const char *name){
+inline std::string
+envto<std::string>(const char *name){
     const char *e=::getenv(name);
     if(e)
         return std::string(e);
@@ -39,7 +49,18 @@ inline std::string envto<std::string>(const char *name){
 }
 
 template<>
-inline std::string envto<std::string>(const char *name, const std::string& dflt){
+inline std::optional<std::string>
+envto<std::optional<std::string>>(const char* name){
+    const char *e=::getenv(name);
+    if(e)
+        return std::string(e);
+    else
+        return {};
+}
+
+template<>
+inline std::string
+envto<std::string>(const char *name, const std::string& dflt){
     const char *e=::getenv(name);
     if(e)
         return std::string(e);

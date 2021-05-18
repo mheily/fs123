@@ -78,6 +78,7 @@ make -f ../GNUmakefile check
 * bloomfilter.hpp
 * uchar_span.hpp
 * non\_null\_or\_throw.hpp
+* traits.hpp
 
 ## Early access to upcoming standards
 

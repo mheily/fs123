@@ -247,6 +247,7 @@
 #pragma once
 #include <core123/svto.hpp>
 #include <core123/throwutils.hpp>
+#include <core123/traits.hpp>
 #include <string>
 #include <map>
 #include <cstring>
@@ -568,12 +569,6 @@ public:
 //   true_setter
 //   false_setter
 namespace detail{
-template<typename>
-struct is_std_optional : std::false_type {};
-
-template<typename T>
-struct is_std_optional<std::optional<T>> : std::true_type{};
-
 template<typename T>
 class _setter{
     T& v;
