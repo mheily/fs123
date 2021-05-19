@@ -557,7 +557,7 @@ req::parse_and_handle(req::up req) try {
         DIAG(_fs123server, "/e request converted to:  query: " << req->query << ", function: " << req->function << ", path_info: " << req->path_info);
     }else{
         // not /e-ncrypted.  Are we willing to look at it?
-        if(svr.the_secret_manager && !svr.gopts->allow_unencrypted_requests)
+        if(svr.the_secret_manager && !svr.gopts->accept_plaintext_requests)
             httpthrow(406, "Requests must be encrypted and authenticated");
         // [?QUERY]
         const char *q = evhttp_uri_get_query(uri);

@@ -7,6 +7,7 @@
 #include <core123/str_view.hpp>
 #include <core123/log_channel.hpp>
 #include <memory>
+#include <optional>
 #include <sys/stat.h>
 
 struct exportd_options;
@@ -67,7 +68,7 @@ struct exportd_options{
                    "cache-control header used when an error *other than ENOENT* is encountered.  It's not uncommon for such errors to be the result of server-side mis-configuration, so a long timeout is undesirable because it would lock in the error"); \
         ADD_OPTION(size_t, rc_size, 10000, "size of rules-cache");      \
         /* options related to shared secrets and fs123-secretbox */ \
-        ADD_OPTION(std::string, sharedkeydir, "", "path to directory containing shared secrets (pre-chroot!)"); \
+        ADD_STD_OPTIONAL(std::string, sharedkeydir, "path to directory containing shared secrets (pre-chroot!)"); \
         ADD_OPTION(std::string, encoding_keyid_file, "encoding", "name of file containing the encoding secret. (if relative, then with respect to sharedkeydir, otherwise with respect to chroot)"); \
         ADD_OPTION(uint64_t, sharedkeydir_refresh, 43200, "reread files in sharedkeydir after this many seconds"); \
         /* options controlling the threadpool */                        \
@@ -86,13 +87,17 @@ struct exportd_options{
         ADD_OPTION(double, debug_add_random_delay, 0., "DEVEL/DEBUG ONLY.  NOT FOR PRODUCTION - A non-zero value will introduce random delays in every callback.  Potentially useful for exposing bugs related to threading, timeouts, etc.  The value is used as the 'b' parameter of a Cauchy distribution for the delay in seconds.");
 
 #define ADD_OPTION(TYPE, NAME, DEFAULT, DESC) TYPE NAME = DEFAULT
+#define ADD_STD_OPTIONAL(TYPE, NAME, DESC) std::optional<TYPE> NAME;
     ADD_ALL_OPTIONS;
 #undef ADD_OPTION
+#undef ADD_STD_OPTIONAL
     exportd_options(core123::option_parser& p,  const char* progname) : PROGNAME(progname){
         p.add_option("help", "print this message to stderr", core123::opt_true_setter(help));
 #define ADD_OPTION(TYPE, NAME, DEFAULT, DESC) p.add_option(#NAME, core123::str(DEFAULT), DESC, core123::opt_setter(NAME))
+#define ADD_STD_OPTIONAL(TYPE, NAME, DESC) p.add_option(#NAME, {}, DESC, core123::opt_setter(NAME))
         ADD_ALL_OPTIONS;
 #undef ADD_OPTION
+#undef ADD_STD_OPTIONAL
 #undef ADD_ALL_OPTIONS
     }
 };

@@ -212,8 +212,7 @@ unsigned sharedkeydir_refresh;
 std::string encoding_keyid_file;
 std::unique_ptr<secret_manager> secret_mgr;
 bool encrypt_requests;
-bool decrypt_replies;
-bool reject_unencrypted_replies;
+bool accept_plaintext_replies;
 
 // configurable, but can't be changed after startup
 bool enhanced_consistency;
@@ -531,12 +530,12 @@ bool berefresh_decode(const req123& req, reply123* reply){
     bool ret = retrying_berefresh(req, reply);
     switch(reply->content_encoding){
     case content_codec::CE_IDENT:
-        if(reject_unencrypted_replies)
-            throw se(EIO, "server replied in cleartext but client has Fs123RejectUnencryptedReplies enabled");
+        if(!accept_plaintext_replies)
+            throw se(EIO, "server replied in plaintext but client has Fs123AcceptPlaintexReplies is false");
         break;
     case content_codec::CE_FS123_SECRETBOX:
-        if(decrypt_replies){
-            auto sp = content_codec::decode(reply->content_encoding, as_uchar_span(reply->content), deref_or_throw(secret_mgr)); // might throw, trashes content
+        if(secret_mgr){
+            auto sp = content_codec::decode(reply->content_encoding, as_uchar_span(reply->content), *secret_mgr); // might throw, trashes content
             // FIXME: If reply->content were a span, we'd just put it on
             // the lhs of the assignment above and we'd be done.  But
             // since it's a string, we're obliged to make a new one and
@@ -544,7 +543,7 @@ bool berefresh_decode(const req123& req, reply123* reply){
             reply->content = std::string(as_str_view(sp));
             reply->content_encoding = content_codec::CE_IDENT;
         }else{
-            throw se(EIO, "reply is encoded with secretbox, but Fs123DecryptReplies is not set");
+            throw se(EIO, "reply is encoded with secretbox, but there's no secret manager");
         }
         break;
     default:
@@ -999,38 +998,37 @@ void fs123_init(void *, struct fuse_conn_info *conn_info) try {
     // The default max_age_long in the server is 86400 (1 day), so:
     sharedkeydir_refresh = envto<unsigned>("Fs123SharedkeydirRefresh", 43200);
     
-    encrypt_requests = envto<bool>("Fs123EncryptRequests", false);
-    // Note that reject_unencrypted_replies defaults to
-    // decrypt_replies, which in turn, defaults to false.  So if
-    // neither is explicitly set, both are false.  But if
-    // decrypt_replies is explicitly set to true, but
-    // reject_unencrypted_replies is not explicitly set, then
-    // reject_unencrypted replies will be true. In the unlikely event
-    // that encrypted replies are expected, but unencrypted (and hence
-    // unauthenticated) replies should be accepted as well, the caller
-    // may explicitly unset reject_unencrypted_replies.
-    decrypt_replies = envto<bool>("Fs123DecryptReplies", false);
-    reject_unencrypted_replies = envto<bool>("Fs123RejectUnencryptedReplies", decrypt_replies);
-    
-    std::string accepted_encodings;
-    if(decrypt_replies && reject_unencrypted_replies)
-        accepted_encodings = "fs123-secretbox,*;q=0";
-    else if(decrypt_replies)
-        accepted_encodings = "fs123-secretbox";
-    
     if(!sharedkeydir_name.empty()){
-        // *only* accept fs123-secretbox.  The *;q=0 sub-clause says that every other
-        // encoding is explicitly forbidden.
         encoding_keyid_file = envto<std::string>("Fs123EncodingKeyidFile", "encoding");
         sharedkeydir_fd = sew::open(sharedkeydir_name.c_str(), O_DIRECTORY|O_RDONLY);
         secret_mgr = std::make_unique<sharedkeydir>(sharedkeydir_fd, encoding_keyid_file, sharedkeydir_refresh);
-    }else{
-        // Note that this *should* makes deref_or_throw and non_null_or_throw superfluous,
-        // but use them anyway just in case.
-        if(encrypt_requests || decrypt_replies || reject_unencrypted_replies)
-            throw se(EINVAL, "Command line options require shared secrets, but Fs123Sharedkeydir is unset");
     }
+    // Default values for the various encryption options *assume* that
+    // if secrets are available then we should use them wherever
+    // possible to encrypt, decrypt and authenticate communication.
+    // It's possible to *explicitly* lower security (e.g.,
+    // -oFs123EncryptRequests=false or
+    // -oFs123AcceptPlaintextReplies=true), but the default is to be as
+    // safe as possible, given the availability of a secret manager.
+    encrypt_requests = envto<bool>("Fs123EncryptRequests", bool(secret_mgr));
+    // Do we want another option?  Or is it sufficient that we accept secretbox replies
+    // if and only if we have a secret manager
+    bool accept_secretbox_replies = bool(secret_mgr);
+    // N.B.  rejecting plaintext replies protects us against MitM.
+    accept_plaintext_replies = envto<bool>("Fs123AcceptPlaintextReplies", !bool(secret_mgr));
 
+    // fail early on impossible configurations:
+    if(!secret_mgr && encrypt_requests)
+        throw se(EINVAL, "Misconfiguration:  Cannot EncryptRequests without a Secretkeydir");
+    if(!accept_secretbox_replies && !accept_plaintext_replies)
+        throw se(EINVAL, "Misconfiguration:  Neither secretbox nor plaintext replies are accepted");
+    
+    std::string accepted_encodings;
+    if(accept_secretbox_replies && !accept_plaintext_replies)
+        accepted_encodings = "fs123-secretbox,*;q=0";
+    else if(accept_secretbox_replies)
+        accepted_encodings = "fs123-secretbox";
+    
     proto_minor = envto<int>("Fs123ProtoMinor", fs123_protocol_minor_default);
     if(proto_minor < fs123_protocol_minor_min)
         throw se(EINVAL, fmt("Fs123ProtoMinor is too small.  It must be at least %d", fs123_protocol_minor_min));
@@ -2327,11 +2325,8 @@ std::ostream& report_config(std::ostream& os){
        << "Fs123SharedkeydirRefresh: " << sharedkeydir_refresh << "\n"
        << "Fs123EncodingKeyidFile: " << encoding_keyid_file << "\n"
        << "Fs123EncryptRequests: " << encrypt_requests << "\n"
-       << "Fs123DecryptReplies: " << decrypt_replies << "\n"
-       << "Fs123RejectUnencryptedReplies: " << reject_unencrypted_replies << "\n"
-       << "Fs123AuthenticateMulticast: " << volatiles->authenticate_multicast  << "\n"
+       << "Fs123AcceptPlaintextReplies: " << accept_plaintext_replies << "\n"
        << "Fs123MulticastTimestampSkew: " << volatiles->multicast_timestamp_skew << "\n"
-       << "Fs123RejectUntrustedMulticast: " << volatiles->reject_untrusted_multicast << "\n"
        << "Fs123RetryTimeout: " << volatiles->retry_timeout << "\n"
        << "Fs123RetryInitialMillis: " << volatiles->retry_initial_millis << "\n"
        << "Fs123RetrySaturate: " << volatiles->retry_saturate << "\n"
@@ -2416,7 +2411,6 @@ std::ostream& report_config(std::ostream& os){
         Prt(Fs123DistribCacheReflector, "<unset>") // default in distrib_cache_backend.cpp
         Prt(Fs123DistribCacheMulticastLoop, "false")// default in distrib_cache_backend.cpp
         Prt(Fs123DangerousNoDistribCacheAbsentOnShutdown, "false") // default in distrib_cache_backend.cpp.
-        Prt(Fs123DistribCacheAuthenticatedMulticast, "false") // default in distrib_cache_backend.cpp
         //Prt(Fs123PastStaleWhileRevalidate)
         //Prt(Fs123CacheMaxMBytes)
         //Prt(Fs123CacheMaxFiles)
@@ -2486,10 +2480,7 @@ try {
                                     "Fs123SharedkeydirRefresh=",
                                     "Fs123EncodingKeyidFile=",
                                     "Fs123EncryptRequests=",
-                                    "Fs123DecryptReplies=",
-                                    "Fs123RejectUnencryptedReplies=",
-                                    "Fs123AuthenticateMulticast=",
-                                    "Fs123RejectUntrustedMulticast=",
+                                    "Fs123AcceptPlaintextReplies=",
                                     "Fs123IgnoreEstaleMismatch=",
 				    "Fs123SupportXattr=",
                                     "Fs123EnhancedConsistency=",

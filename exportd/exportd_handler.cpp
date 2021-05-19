@@ -566,8 +566,8 @@ void exportd_global_setup(const exportd_options& exportd_opts){
             throw se("Could not write to pidfile");
     }
 
-    if(!exportd_opts.sharedkeydir.empty()){
-        the_sharedkeydir_fd = sew::open(exportd_opts.sharedkeydir.c_str(), O_DIRECTORY|O_RDONLY);
+    if(exportd_opts.sharedkeydir){
+        the_sharedkeydir_fd = sew::open(exportd_opts.sharedkeydir->c_str(), O_DIRECTORY|O_RDONLY);
         the_sharedkeydir = std::make_unique<sharedkeydir>(the_sharedkeydir_fd, exportd_opts.encoding_keyid_file, exportd_opts.sharedkeydir_refresh);
     }
     

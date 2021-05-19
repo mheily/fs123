@@ -147,8 +147,7 @@ distrib_cache_message::send(int sockfd, const struct sockaddr_in& dest,
     wpush(dbe.scope);
     std::string sid;
     secret_sp key;
-    if(dbe.vols.authenticate_multicast){
-        non_null_or_throw(dbe.secret_mgr);
+    if(dbe.secret_mgr){
         sid = dbe.secret_mgr->get_indirect_sid("multicast");
         DIAG(_distrib_cache, "send:  sid=" + sid);
         key = dbe.secret_mgr->get_sharedkey(sid);
@@ -240,9 +239,9 @@ bool distrib_cache_message::recv(int fd){
     
     // + read the sid, look it up and verify the hmac.
     str_view sid = rpop();
-    if(dbe.vols.reject_untrusted_multicast){
+    if(dbe.secret_mgr){
         char *msg_hmac = rendptr() + sizeof(tstamp);
-        auto key = deref_or_throw(dbe.secret_mgr).get_sharedkey(std::string{sid});
+        auto key = dbe.secret_mgr->get_sharedkey(std::string{sid});
         if(key->size() < crypto_auth_KEYBYTES)
             throw std::runtime_error("key found, but it's too short to be used in crypto_auth");
         if(crypto_auth_verify((unsigned char*)msg_hmac, (unsigned char*)&data[0], msg_hmac-&data[0], key->data()) != 0)
@@ -294,12 +293,7 @@ distrib_cache_backend::distrib_cache_backend(backend123* upstream, backend123* s
     option_parser op;
     server_options sopts(op); // most of the defaults are  fine?
     op.set("bindaddr", "0.0.0.0");
-    // op.set("allow_unencrypted_requests", "true"); // if we want to encrypt the client-peer channel
     op.setopts_from_defaults();
-    // Note that this *should* makes deref_or_throw and non_null_or_throw superfluous,
-    // but use them anyway just in case somebody changes vols.xxx behind our back.
-    if(!secret_mgr && (vols.authenticate_multicast || vols.reject_untrusted_multicast))
-        throw std::runtime_error("authenticated multicast enabled, but the secret_manager is NULL.");
     peer_handler = std::make_unique<peer_handler_t>(*this);
     myserver = make_unique<fs123p7::server>(sopts, *peer_handler);
     server_url = myserver->get_baseurl();
@@ -770,16 +764,3 @@ peer_handler_t::p(req::up req, uint64_t etag64, istream&) try {
     // don't pass 'e' to exception_reply.  It will just issue the same complaint again, to no useful purpose.
     exception_reply(move(req), http_exception(500, "distrib_cache_backend::peer_handler::p:  Client will see 500 and will discourage others from connecting to us."));
  }
-
-#if 0
-// Implementing these two functions would allow us to encrypt the
-// client-peer channel.
-void distrib_cache_backend::decode_reply(const reply123&){
-}
-
-secret_manager*
-peer_handler_t::get_secret_manager() /*override*/{
-    //return be.secret_mgr.get();
-    return nullptr;
-}
-#endif
