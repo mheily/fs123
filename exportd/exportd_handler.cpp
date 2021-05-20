@@ -178,7 +178,7 @@ exportd_handler::s(fs123p7::req::up req){
     // The cache-control for stat isn't path-specific, so it isn't appropriate
     // to go looking for .fs123_cache_control files.  Another command line
     // option??
-    s_reply(std::move(req), svb, "max-age=30,stale-while-revalidate=30");
+    s_reply(std::move(req), svb, "max-age=30,stale-while-revalidate=30,stale-if-error=86400");
 }
 
 void
