@@ -1019,7 +1019,7 @@ void fs123_init(void *, struct fuse_conn_info *conn_info) try {
 
     // fail early on impossible configurations:
     if(!secret_mgr && encrypt_requests)
-        throw se(EINVAL, "Misconfiguration:  Cannot EncryptRequests without a Secretkeydir");
+        throw se(EINVAL, "Misconfiguration:  Cannot EncryptRequests without a Sharedkeydir");
     if(!accept_secretbox_replies && !accept_plaintext_replies)
         throw se(EINVAL, "Misconfiguration:  Neither secretbox nor plaintext replies are accepted");
     
