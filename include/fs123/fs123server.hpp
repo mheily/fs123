@@ -372,6 +372,7 @@ private:
     long dir_lastoff;
     std::unique_ptr<char, decltype(std::free)*> decoded_path_up{nullptr, ::free}; // returned by evhttp_uridecode.  We must free.
     std::string decode64; // the result of base64-decode of the path *iff* the request was /e
+    std::string envelope_sid; // the sid *iff* the request was a /e
     core123::str_view inm; // empty unless there was an If-Not-Modified header
     core123::str_view function;
     core123::uchar_blob blob;

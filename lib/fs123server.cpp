@@ -538,6 +538,8 @@ req::parse_and_handle(req::up req) try {
         if(!svr.the_secret_manager)
             httpthrow(400, "decode_envelope:  no secret manager.  Can't decode");
         req->decode64 = macaron::Base64::Decode(std::string(req->path_info.substr(1)));
+        fs123_secretbox_header hdr(as_uchar_span(req->decode64));
+        req->envelope_sid = hdr.get_keyid();
         // decode in-place, 
         auto decrypted_sv = as_str_view(content_codec::decode(content_codec::CE_FS123_SECRETBOX, as_uchar_span(req->decode64), *svr.the_secret_manager));
         // The decrypted string should look like '/FUNCTION/PA/TH?QUERY
@@ -986,7 +988,37 @@ void req::not_modified_reply(const std::string& cc) {
 
 void req::redirect_reply(const std::string& location, const std::string& cc) {
     auto ohdrs = evhttp_request_get_output_headers(evhr);
-    add_hdr(ohdrs, "Location", location.c_str());
+    if(envelope_sid.empty())
+        add_hdr(ohdrs, "Location", location.c_str());
+    else{
+        // rewrite the location as an /e -nvelope.
+        if(!svr.the_secret_manager)
+            httpthrow(500, "redirect_reply: Trying to re-encode a location, but secret_manager is NULL.  This can't happen");
+        // Pick apart the location into .../fs123/7/2/ - /FUNCTION...
+        // There's inline code to do this in parse_and_handle, but
+        // a regex is so much easier (or is it...)
+        static std::regex re("(.*?)(/fs123/7/\\d+/)(.*)");
+        std::smatch mr;
+        if(!std::regex_match(location, mr, re))
+            httpthrow(500, "redirect_reply: location: \"" +location + "\" doesn't look like an fs123 request.  Cannot re-encrypt.");
+        // The content_codec::encode API is awful.  There is very similar
+        // code in app_mount.cpp.  Refactor!
+        std::string urlstem = "/" + mr[3].str();
+        size_t sz = urlstem.size();
+        const size_t leader = sizeof(fs123_secretbox_header) + crypto_secretbox_MACBYTES; // crypto_secretbox_MACBYTES == 16
+        const size_t padding = 8;
+        uchar_blob ub(sz + leader + padding); // enough space for zerobytes and padding.
+        padded_uchar_span ps(ub, leader, sz);
+        ::memcpy(ps.data(), urlstem.c_str(), sz);
+        secret_sp secret = svr.the_secret_manager->get_sharedkey(envelope_sid);
+        padded_uchar_span encoded = content_codec::encode(content_codec::CE_FS123_SECRETBOX,
+                                                          envelope_sid, secret,
+                                                          ps,
+                                                          padding, true/*derived_nonce*/);
+        std::string elocation = mr[1].str() + mr[2].str() + "e/" + macaron::Base64::Encode(std::string(as_str_view(encoded)));
+
+        add_hdr(ohdrs, "Location", elocation.c_str());
+    }
     if(!cc.empty())
         add_hdr(ohdrs, "Cache-control", cc.c_str());
     log_and_send_destructively(302);  // 302 is the HTTP Found status
