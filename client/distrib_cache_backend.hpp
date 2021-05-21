@@ -393,7 +393,7 @@ struct distrib_cache_backend : public backend123{
     // handle_peer_error is called when we detect an error talking to
     // a peer.  The side effects are similar to, but not necessarily
     // exactly the same as handle_absent.
-    void handle_peer_error(const std::string& peerurl);
+    void handle_peer_error(peer::sp, const req123&,  std::exception&);
 
     std::string get_url() const { return server_url; }
     std::string get_uuid() override { return server_backend->get_uuid(); }

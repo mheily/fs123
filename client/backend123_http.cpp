@@ -643,10 +643,12 @@ struct backend123_http::curl_handler{
             // get anything else, we throw.
             //
             // content probably has newlines, and might even contain
-            // html, which is annoying if we ship it to syslog,
-            // but discarding it seems wrong.  Maybe the http_throw
-            // needs a better API?
-            httpthrow(http_code, content);
+            // html, which is annoying if we ship it to syslog, but
+            // discarding it seems wrong.  Maybe httpthrow needs a
+            // better API?  Note that the http category adds something
+            // like: ": 500 Internal Service Error" *after* the
+            // message string
+            httpthrow(http_code, "<curlhandler::getreply>:\n" + content + "</curlhandler::getreply>\nunexpected HTTP status");
         }
         auto age = get_age();
         auto max_age = get_max_age();

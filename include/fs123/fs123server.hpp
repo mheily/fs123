@@ -394,6 +394,7 @@ private:
         allocate_pbuf(s.size());
         buf = buf.append(s);
     }
+    void internal_exception(const std::exception& e);
     // The reply methods are private.  There are friend versions that take
     // a up 'this' argument that are public.
     void exception_reply(const std::exception& e);

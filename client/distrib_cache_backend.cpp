@@ -492,8 +492,7 @@ distrib_cache_backend::refresh(const req123& req, reply123* reply) /*override*/ 
         myreq.urlstem = "/p" + peer_handler_t::VERSION + req.urlstem;
         return p->be->refresh(myreq, reply);
     }catch(exception& e){
-        complain(LOG_WARNING, e, "peer->be->refresh threw.  Discouraging future attempts to use that peer: " + p->url);
-        handle_peer_error(p->url);
+        handle_peer_error(p, myreq, e);
         return upstream_backend->refresh(req, reply);
     }
  }
@@ -550,10 +549,18 @@ distrib_cache_backend::handle_absent(const string& peerurl){
 }
 
 void
-distrib_cache_backend::handle_peer_error(const string& peerurl){
+distrib_cache_backend::handle_peer_error(peer::sp p, const req123& req, std::exception& e){
     distrib_cache_stats.distc_peer_errors++;
-    send_discourage_peer(peerurl);
-    peer_map.remove_url(peerurl);
+    // Typically, the exception is something thrown by
+    // backend_http::refresh, FIXME: look inside e to decide how
+    // severe it really is, whether it looks permanent or transient,
+    // is it part of a pattern, etc.  Should we stop talking to that
+    // peer?  Should we discourage everyone else from talking to that
+    // peer?
+    complain(LOG_WARNING, e, "handle_peer_error:  client side error requesting %s from %s",
+             req.urlstem.c_str(), p->url.c_str());
+    send_discourage_peer(p->url);
+    peer_map.remove_url(p->url);
 }
 
 void
@@ -741,6 +748,14 @@ peer_handler_t::p(req::up req, uint64_t etag64, istream&) try {
     // requests from others (see the ascii art in
     // distrib_cache_backend.hpp).
     atomic_scoped_nanotimer _t(&distrib_cache_stats.distc_server_refresh_sec);
+#if 0
+    // Ideally, we would have a stress test that causes bona fide
+    // server side errors.  Until then, we can exercise some of the
+    // error handling code by uncommenting this.
+    if(threeroe(myreq.urlstem).hash64() % 100 == 0)
+        throw libcurl_category_t::make_libcurl_error(CURLE_OPERATION_TIMEDOUT, ETIMEDOUT, "Randomly generated server error!");
+#endif
+
     bool modified = be.server_backend->refresh(myreq, &reply123);
     distrib_cache_stats.distc_server_refreshes++;
     distrib_cache_stats.distc_server_refresh_bytes += reply123.content.size();
@@ -760,7 +775,11 @@ peer_handler_t::p(req::up req, uint64_t etag64, istream&) try {
     // HHTRSUM
     return p_reply(move(req), reply123.content, reply123.etag64, cc);
  }catch(std::exception& e){
-    complain(e, "Exception thrown by distrib_cache_backend::peer_handler::p.");
-    // don't pass 'e' to exception_reply.  It will just issue the same complaint again, to no useful purpose.
-    exception_reply(move(req), http_exception(500, "distrib_cache_backend::peer_handler::p:  Client will see 500 and will discourage others from connecting to us."));
+    try{
+        std::throw_with_nested(http_exception(500, "distrib_cache_backend::peer_handler::p: url:" + string(req->uri)));
+    }catch(std::exception& ne){
+        // level?  Clients typically use LOG_WARNING for backend http errors, so ...
+        complain(LOG_WARNING, ne, "this is the server-side complaint.  Look for a matching complaint on the client side");
+        exception_reply(move(req), ne);
+    }
  }

@@ -280,6 +280,8 @@ private:
                 const char *e = p + ::strlen(p);
                 while(p<e){
                     const char *nl = std::find(p, e, '\n');
+                    // should we indicate something when (nl!=e), i.e., when newlines
+                    // result in multiple push_backs?
                     ret.push_back(core123::fmt("%c[%d.%d] %.*s", levkey, seq, i++, int(nl - p), p));
                     p = nl + (nl < e);
                 }

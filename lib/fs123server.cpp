@@ -662,7 +662,7 @@ req::parse_and_handle(req::up req) try {
     }
  }catch(std::exception& e){
     if(req)
-        req->exception_reply(e);
+        req->internal_exception(e);
     else
         complain(e, "exception thrown by handler, assuming the handler called a _reply function (perhaps in the req's destructor)");
  }
@@ -740,14 +740,20 @@ req::common_reply200(const std::string& cc, uint64_t etag64/*=0*/, const char* f
     log_and_send_destructively(200);
  }
 
-// exception_reply - complain to logs, send an http 5xx (or other
-// error status), and return the error status to the caller.  It must
-// not throw because it's called from (among other places) the
-// exception handler in the http_cb callback.  There's nobody higher
-// up the stack to catch anything it might throw.
+// internal_exception:  complain and call exception_reply
+void /*private*/ 
+req::internal_exception(const std::exception& e) {
+    complain(e, "req::internal_exception: uri: " + std::string(uri));
+    return exception_reply(e);
+}
+
+// exception_reply - reply with an http 5xx (or other error status).
+// exception_reply does not call complain() itself.  Its caller *may*
+// choose to log whatever got us here.  And the body of the reply
+// contains the nested 'what' strings in the exception, which the
+// recipient *may* choose to log.
 void
 req::exception_reply(const std::exception& e) {
-    complain(e, "fs123server library caught exception:");
     // clear any headers or content that had already been
     // associated with evhr before the throw:
     evhttp_clear_headers(evhttp_request_get_output_headers(evhr));
@@ -824,8 +830,8 @@ server::get_baseurl() const{
     return url;
 }
 
-void
-server::evhttp_bind_socket(struct event_base* eb, struct evhttp* eh) /*private */{
+void /*private*/
+server::evhttp_bind_socket(struct event_base* eb, struct evhttp* eh){
     // additional thread, existing socket.
     //
     // We can't call evhttp_accept_socket_with_handle because it
@@ -961,7 +967,7 @@ req::req(evhttp_request* evreq, server* _server, async_reply_mechanism* _arm) :
 req::~req(){
     // see comment about deleted constructors in fs123server.hpp.
     if(!replied)
-        exception_reply(http_exception(500, "fs123p7::req destroyed before xxx_reply called."));
+        internal_exception(http_exception(500, "fs123p7::req destroyed before xxx_reply called."));
 }
 
 void req::errno_reply(int eno, const std::string& cc) {
@@ -997,7 +1003,7 @@ void req::a_reply(const struct stat& sb, uint64_t validator, uint64_t esc, const
     oss << sb << '\n' << validator;
     copy_to_pbuf(oss.str());
     common_reply200(cc);
- }catch(std::exception& e) { exception_reply(e); }
+ }catch(std::exception& e) { internal_exception(e); }
 
 bool req::add_dirent(core123::str_view name, long offset, int type, uint64_t estale_cookie){
     if(function != "d")
@@ -1060,7 +1066,7 @@ void req::d_reply(bool at_eof, uint64_t etag64, uint64_t esc, const std::string&
         }
         add_hdr(ohdrs, HHNO, std::to_string(final_telldir) + (at_eof?" EOF":""));
         common_reply200(cc, etag64);
- }catch(std::exception& e) { exception_reply(e); }
+ }catch(std::exception& e) { internal_exception(e); }
 
 void req::f_reply(size_t nread, uint64_t content_validator, uint64_t etag64, uint64_t esc, const std::string& cc) try {
         if(function != "f")
@@ -1077,14 +1083,14 @@ void req::f_reply(size_t nread, uint64_t content_validator, uint64_t etag64, uin
 
         add_hdr(ohdrs, HHCOOKIE, std::to_string(esc));
         common_reply200(cc, etag64);
- }catch(std::exception& e) { exception_reply(e); }
+ }catch(std::exception& e) { internal_exception(e); }
 
 void req::l_reply(const std::string& target, const std::string& cc) try {
         if(function != "l")
             httpthrow(500, "handler replied to " + std::string(function) + " with l_reply");
         copy_to_pbuf(target);
         common_reply200(cc);
- }catch(std::exception& e) { exception_reply(e); }
+ }catch(std::exception& e) { internal_exception(e); }
 
 void req::s_reply(const struct statvfs& sv, const std::string& cc) try {
         if(function != "s")
@@ -1093,28 +1099,28 @@ void req::s_reply(const struct statvfs& sv, const std::string& cc) try {
         oss << sv;
         copy_to_pbuf(oss.str());
         common_reply200(cc);
- }catch(std::exception& e) { exception_reply(e); }
+ }catch(std::exception& e) { internal_exception(e); }
 
 void req::x_reply(const std::string& xattr, const std::string& cc) try {
         if(function != "x")
             httpthrow(500, "handler replied to " + std::string(function) + " with x_reply");
         copy_to_pbuf(xattr);
         common_reply200(cc);
- }catch(std::exception& e) { exception_reply(e); }
+ }catch(std::exception& e) { internal_exception(e); }
 
 void req::n_reply(const std::string& body, const std::string& cc) try {
         if(function != "n")
             httpthrow(500, "handler replied to " + std::string(function) + " with n_reply");
         copy_to_pbuf(body + str(server_stats));
         common_reply200(cc);
- }catch(std::exception& e) { exception_reply(e); }
+ }catch(std::exception& e) { internal_exception(e); }
 
 void req::p_reply(const std::string& body, uint64_t etag64, const std::string& cc) try {
         if(function != "p")
             httpthrow(500, "handler replied to " + std::string(function) + " with p_reply");
         copy_to_pbuf(body);
         common_reply200(cc, etag64, nullptr); // if fs123-errno is needed, the handler should have done add_header.
- }catch(std::exception& e) { exception_reply(e); }
+ }catch(std::exception& e) { internal_exception(e); }
 
 std::pair<std::string, uint16_t>
 req::get_peer() const {
