@@ -56,7 +56,6 @@ set $debug -u
 
 export MTPT=$MTroot/mtpt
 etc=${RCroot}/etc/fs123p7exportd
-initd=${RCroot}/etc/init.d
 
 export WORKDIR EXPORT_ROOT RCroot MTroot
 
@@ -69,7 +68,7 @@ if [ -d ${EXPORT_ROOT} ]; then
     rm -rf ${EXPORT_ROOT}.removeme.$$ || true
 fi
 
-for d in ${EXPORT_ROOT} ${RCroot}/var/run ${RCroot}/var/lock/subsys $etc ${RCroot}/sbin $initd ${MTroot}/sbin ${MTPT}
+for d in ${EXPORT_ROOT} ${RCroot}/var/run ${RCroot}/var/lock/subsys $etc ${RCroot}/sbin ${MTroot}/sbin ${MTPT}
 do
 	if test ! -d "$d"; then mkdir -p "$d"; fi
 done
@@ -91,13 +90,6 @@ fi
 : ${cookie_src:=st_ino}
 rm ${EXPORT_ROOT}/abc
 
-for f in $initd/fs123p7exportd; do
-	if test -f $f; then
-		mv $f $f.removeme.$$
-		rm -f $f.removeme.$$ || true
-	fi
-done
-
 clientexe=${MTroot}/sbin/mount.fs123p7
 serverexe=${RCroot}/sbin/fs123p7
 
@@ -106,8 +98,6 @@ serverexe=${RCroot}/sbin/fs123p7
 # or start always does a copy?
 : ${CPEXE=ln -sfv} #  was cp -av
 set -x
-$CPEXE ${testdir}/../exportd/fs123p7exportd.rc $initd/fs123p7exportd
-sed -i.bak -e "s,RCroot=[^}]*,RCroot=$RCroot," $initd/fs123p7exportd
 
 : ${OBJDIR:=$(pwd)}
 PATH=$OBJDIR:$PATH

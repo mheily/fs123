@@ -18,7 +18,7 @@
 mkfile_path := $(word $(words $(MAKEFILE_LIST)),$(MAKEFILE_LIST))
 top/ := $(dir $(mkfile_path))
 abstop/ := $(realpath $(top/))/
-VPATH=$(top/)lib:$(top/)client:$(top/)exportd:$(top/)examples:$(top/)/testserver
+VPATH=$(top/)lib:$(top/)fs123p7:$(top/)examples:$(top/)/testserver
 # Link with $(CXX), not $(CC)!
 LINK.o = $(CXX) $(LDFLAGS) $(TARGET_ARCH)
 
@@ -86,7 +86,7 @@ ut_content_codec : LDLIBS += -lsodium
 
 # < /libfs123 >
 
-# <client fs123p7>
+# <fs123p7>
 fs123p7_cppsrcs:=fs123p7.cpp app_mount.cpp app_setxattr.cpp app_ctl.cpp fuseful.cpp backend123.cpp backend123_http.cpp diskcache.cpp special_ino.cpp inomap.cpp openfilemap.cpp distrib_cache_backend.cpp
 fs123p7_cppsrcs += app_exportd.cpp exportd_handler.cpp exportd_cc_rules.cpp
 CPPSRCS += $(fs123p7_cppsrcs)
@@ -113,7 +113,7 @@ ut_diskcache : diskcache.o backend123.o
 ut_inomap : inomap.o
 
 backend123_http.o : CPPFLAGS += $(shell curl-config --cflags)
-#</client>
+#</fs123p7>
 
 
 # <ex1server>
