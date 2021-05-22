@@ -18,7 +18,7 @@
 mkfile_path := $(word $(words $(MAKEFILE_LIST)),$(MAKEFILE_LIST))
 top/ := $(dir $(mkfile_path))
 abstop/ := $(realpath $(top/))/
-VPATH=$(top/)lib:$(top/)client:$(top/)exportd:$(top/)examples
+VPATH=$(top/)lib:$(top/)client:$(top/)exportd:$(top/)examples:$(top/)/testserver
 # Link with $(CXX), not $(CC)!
 LINK.o = $(CXX) $(LDFLAGS) $(TARGET_ARCH)
 
@@ -33,7 +33,7 @@ unit_tests += utx_cc_rules
 unit_tests += ut_inomap
 
 # other_exe
-other_exe = ex1server
+other_exe = ex1server testserver
 
 libs=libfs123.a
 
@@ -124,6 +124,14 @@ ex1server: LDLIBS += $(serverlibs)
 ex1server: $(ex1_objs)
 	$(LINK.o) $^ $(LOADLIBES) $(LDLIBS) -o $@
 # </ex1server>
+# <testserver>
+testserver_cppsrcs := testserver.cpp
+CPPSRCS += $(testserver_cppsrcs)
+testserver_objs := $(testserver_cppsrcs:%.cpp=%.o)
+testserver: LDLIBS += $(serverlibs)
+testserver: $(testserver_objs)
+	$(LINK.o) $^ $(LOADLIBES) $(LDLIBS) -o $@
+# </testserver>
 
 # Why doesn't this work if it's higher up?
 $(EXE): libfs123.a
