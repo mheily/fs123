@@ -766,6 +766,15 @@ peer_handler_t::p(req::up req, uint64_t etag64, istream&) try {
     }
     req->add_header(HHCOOKIE, str(reply123.estale_cookie));
     req->add_header(HHERRNO, str(reply123.eno));
+    switch(reply123.content_encoding){
+    case content_codec::CE_IDENT:
+        break;
+    case content_codec::CE_FS123_SECRETBOX:
+        req->add_header("Content-encoding", "fs123-secretbox");
+        break;
+    case content_codec::CE_UNKNOWN:
+        throw http_exception(500, "reply has unknown encoding.  This should have been caught earlier");
+    }
     if(reply123.chunk_next_meta != reply123::CNO_MISSING){
         // Ugh...
         const char *xtra = (reply123.chunk_next_meta == reply123::CNO_EOF) ?

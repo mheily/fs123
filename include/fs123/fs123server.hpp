@@ -303,19 +303,29 @@ struct req{
     // to remain valid until the one of the XXX_reply functions is
     // called with this as an argument.
     //
+    // uri is the *original* uri, before any decryption or manipulation
+    // are done.  I.e., uri might be:
+    //   /sel/ec/tor/fs123/7/2/e/<base64-gibberish>
+    // or:
+    //   /sel/ec/tor/fs123/7/2/f/file/name?128,0
+    core123::str_view uri;
+    // The prefix is the part before the /FUNCTION designator.
+    core123::str_view prefix;  // e.g., /sel/ec/tor/fs123/7/2/
+    core123::str_view function; // e.g., f (not e, even if the original uri is /e/ncrypted!)
     // path_info is the CGI terminology for the part of the URI that
     // follows the script's name. In fs123, path_info is the part of
     // the URI that follows the /fs123/Major/Minor/Function and
     // precedes the query-string.  I.e., it's the part of the URI that
-    // names the 'file' that is being asked about.
-    core123::str_view path_info;
-    core123::str_view uri; // mostly of interest to handlers that call redirect_reply
+    // names the 'file' that is being asked about.  It is plaintext,
+    // even if the original uri is /encrypted
+    core123::str_view path_info; // e.g., /file/name
     // N.B. query is what comes *after* the optional '?'.
-    // query.data() is nullptr if there was no query-string in the uri.
-    // Conversely, query.data() is non-null, and points to a
-    // zero-length string if there the query-string exists but is
-    // empty.
+    // query.data() is nullptr if there was no query-string in the
+    // uri.  Conversely, query.data() is non-null, and points to a
+    // zero-length string if the query-string exists but is empty.
     core123::str_view query; // mostly of interest to p() handlers.
+    // It's possible to reconstruct the decrypted uri as:
+    //    prefix + function + path_info + (query->data()?"?":"") + query
 
     // Methods that may only be called from within a d() handler:
     bool add_dirent(core123::str_view name, long offset, int type, uint64_t esc);
@@ -374,7 +384,6 @@ private:
     std::string decode64; // the result of base64-decode of the path *iff* the request was /e
     std::string envelope_sid; // the sid *iff* the request was a /e
     core123::str_view inm; // empty unless there was an If-Not-Modified header
-    core123::str_view function;
     core123::uchar_blob blob;
     core123::padded_uchar_span buf;    // the body of the http reply (padded so we can prepend and append to it in-place)
     server& svr;

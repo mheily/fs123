@@ -516,6 +516,7 @@ req::parse_and_handle(req::up req) try {
     // nextoff is one past the slash that follows PROTOmajor/PROTOminor
     if(upath_sv.size() <= nextoff || upath_sv[nextoff-1] != '/')
         httpthrow(400, "expected /FUNCTION after PROTOmajor/PROTOminor");
+    req->prefix =  upath_sv.substr(0, nextoff); // i.e., /sel/ec/tor/fs123/7/2/
     
     // FUNCTION[/PA/TH]
     size_t pidx = upath_sv.find('/', nextoff);
@@ -576,10 +577,13 @@ req::parse_and_handle(req::up req) try {
         default:
             httpthrow(403, std::string("Unsupported request method ") + std::to_string(evhttp_request_get_command(req->evhr))); break;
         }
+        // We've finally got path_info fully decoded and decrypted.  Does it look ok?
+        validate_path(req->path_info);  // throws if it's not ok.
+        // Note that we do *not* validate the path_info after /p.  It
+        // might be /e-ncrytpted, in which case it can contain .., //,
+        // etc.  It's up to the p-hander to make sure it's ok.
     }
 
-    // We've finally got path_info full decoded and decrypted.  Does it look ok?
-    validate_path(req->path_info);  // throws if it's not ok.
 
     std::string esid = svr.the_secret_manager ? svr.the_secret_manager->get_encode_sid() : "";
     const char* inm_char = evhttp_find_header(inheaders, "If-None-Match"); // yes - it uses strcasecmp.
@@ -990,8 +994,9 @@ void req::redirect_reply(const std::string& location, const std::string& cc) {
     auto ohdrs = evhttp_request_get_output_headers(evhr);
     if(envelope_sid.empty())
         add_hdr(ohdrs, "Location", location.c_str());
-    else{
-        // rewrite the location as an /e -nvelope.
+    else try {
+        // The original request was /e/nvelope, but the handler gives us
+        // a plaintext location.  Rewrite the location as an /e/nvelope.
         if(!svr.the_secret_manager)
             httpthrow(500, "redirect_reply: Trying to re-encode a location, but secret_manager is NULL.  This can't happen");
         // Pick apart the location into .../fs123/7/2/ - /FUNCTION...
@@ -1018,6 +1023,8 @@ void req::redirect_reply(const std::string& location, const std::string& cc) {
         std::string elocation = mr[1].str() + mr[2].str() + "e/" + macaron::Base64::Encode(std::string(as_str_view(encoded)));
 
         add_hdr(ohdrs, "Location", elocation.c_str());
+    }catch(std::exception& e){
+        return internal_exception(e);
     }
     if(!cc.empty())
         add_hdr(ohdrs, "Cache-control", cc.c_str());
