@@ -201,7 +201,23 @@ bool distrib_cache_message::recv(int fd){
 
     DIAG(_distrib_cache, "recv(len=" + str(recvd) + "): " + quopri(str_view{&data[0], size_t(recvd)}));
     // + initialize rptr() and rendptr() so that we can safely use 'rpop'.
-    set_rptrs(recvd);
+    try{
+        set_rptrs(recvd);
+    }catch(std::exception& re){
+        // set_rptrs assumes that the packet conforms to a minimal
+        // template.  Otherwise, it does the safe thing and throws.
+        // In practice, there's probably an older version of the code
+        // "sharing" our multicast channel.  Don't panic.  Complain
+        // and carry on.
+        auto firstnull = find(&data[0], &data[recvd], '\0');
+        if( &data[recvd] == firstnull )
+            complain(LOG_NOTICE, re, "distrib_cache_message::recv: packet does not start with an NTCS.  Definitely not meant for us");
+        else if( str_view(&data[0], firstnull - &data[0]) == VERSION )
+            complain(LOG_WARNING, re, "distrib_cache_message::recv: the VERSION is (surprsingly) correct, but the packet looks bad");
+        else
+            complain(LOG_NOTICE, re, "distrib_cache_message::recv: incorrect version");
+        return false;
+    }
 
     // + check the version.
     str_view version = rpop();
