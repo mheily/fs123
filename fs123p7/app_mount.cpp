@@ -215,7 +215,6 @@ bool encrypt_requests;
 bool accept_plaintext_replies;
 
 // configurable, but can't be changed after startup
-bool enhanced_consistency;
 std::string signal_filename;
 bool no_kernel_data_caching; // DEBUGGING TESTING ONLY.  WILL KILL PERFORMANCE!
 bool no_kernel_attr_caching;   // DEBUGGING TESTING ONLY.  WILL KILL PERFORMANCE!
@@ -1100,9 +1099,7 @@ void fs123_init(void *, struct fuse_conn_info *conn_info) try {
     linkmap = std::make_unique<decltype(linkmap)::element_type>(linkmapsz);
     ino_remember(g_mount_dotdot_ino, "", 1, ~0);
 
-    enhanced_consistency = envto<bool>("Fs123EnhancedConsistency", true);
-    if(enhanced_consistency)
-        openfile_startscan();
+    openfile_startscan();
     no_kernel_data_caching = envto<bool>("Fs123NoKernelDataCaching", false);
     no_kernel_attr_caching = envto<bool>("Fs123NoKernelAttrCaching", false);
     no_kernel_dentry_caching = envto<bool>("Fs123NoKernelDentryCaching", false);
@@ -1197,8 +1194,7 @@ void fs123_destroy(void*){
         close(named_pipe_fd);
         named_pipe_fd = -1;
     }
-    if(enhanced_consistency)
-        openfile_stopscan();      DIAG(_shutdown, "openfile_stopscan() done");
+    openfile_stopscan();          DIAG(_shutdown, "openfile_stopscan() done");
     linkmap.reset();              DIAG(_shutdown, "linkmap.reset() done");
     attrcache.reset();            DIAG(_shutdown, "attrcache.reset() done");
     distrib_cache_be.reset();     DIAG(_shutdown, "distrb_cache_be.reset() done");
@@ -1668,7 +1664,7 @@ void fs123_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) try {
     if(r.max_age().count() == 0)
         fi->direct_io = true;
     fi->keep_cache = (old_validator == new_validator);
-    if(enhanced_consistency && !fi->direct_io){
+    if(!fi->direct_io){
         fi->fh = openfile_register(ino, r);
     }else{
         fi->fh = 0;
@@ -1695,13 +1691,13 @@ void fs123_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, struct f
     DIAGfkey(_llops, "read(%p, ino=%ju, size=%zu, off=%jd)\n", req, (uintmax_t)ino, size, (intmax_t)off);
     if(ino > 1 && ino <= max_special_ino)
         return read_special_ino(req, ino, size, off, fi);
-    // FIXME - if fi->fh==0 && enhanced_consistency, it means we were
+    // FIXME - if fi->fh==0 , it means we were
     // opened with direct_io.  In that case, it might make more sense
     // to skip the chunking and request (almost) exactly the bytes we
     // want.  Otherwise, if somebody does a lot of short reads, we
     // might DoS ourselves by pulling Fs123Chunk*KiB over the network
     // for every read(2).  Maybe something like:
-    // if(enhanced_consistency && fi->fh == 0)
+    // if(fi->fh == 0)
     //     return fs123_read_nochunk(req, ino, size, off, fi);
 
     static constexpr int KiB = 1024;
@@ -1761,7 +1757,7 @@ void fs123_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, struct f
         }
     }
     // Wake up the openfile machinery if rvalidator implies that kernel caches are stale.
-    if(rvalidator > ino_validator && fi->fh && enhanced_consistency)
+    if(rvalidator > ino_validator && fi->fh)
         openfile_expire_now(ino, fi->fh);
     
     DIAGfkey(_read, "reply0: size=%zu\n", content.size());
@@ -1809,7 +1805,7 @@ void fs123_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, struct f
         }
     }
     // Wake up the openfile machinery if rvalidator implies that kernel caches are stale.
-    if(rvalidator > ino_validator && fi->fh && enhanced_consistency)
+    if(rvalidator > ino_validator && fi->fh)
         openfile_expire_now(ino, fi->fh);
     auto len1 = std::min(nleft, content.size());
     iovecs[1].iov_base = const_cast<char*>(content.data());
@@ -1824,7 +1820,7 @@ void fs123_release(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) tr
     update_idle_timer();
     if(ino > 1 && ino <= max_special_ino)
         return release_special_ino(req, ino, fi);
-    if(enhanced_consistency && fi->fh)
+    if(fi->fh)
         openfile_release(ino, fi->fh);
     reply_release(req);
  } CATCH_ERRS
@@ -2266,8 +2262,7 @@ std::ostream& report_stats(std::ostream& os){
         http_be->report_stats(os);
     if(distrib_cache_be)
         distrib_cache_be->report_stats(os);
-    if(enhanced_consistency)
-        os << openfile_report();
+    os << openfile_report();
     if(secret_mgr)
         secret_mgr->report_stats(os);
     content_codec::report_stats(os);
@@ -2384,7 +2379,6 @@ std::ostream& report_config(std::ostream& os){
         //Prt(Fs123RetryTimeout)
         //Prt(Fs123RetryInitialMillis)
         //Prt(Fs123RetrySaturate)
-        Prt(Fs123EnhancedConsistency, "true")
         Prt(Fs123SignalFile, "fs123signal")
 #ifdef M_ARENA_MAX
         Prt(Fs123MallocArenaMax, 0)
@@ -2483,7 +2477,6 @@ try {
                                     "Fs123AcceptPlaintextReplies=",
                                     "Fs123IgnoreEstaleMismatch=",
 				    "Fs123SupportXattr=",
-                                    "Fs123EnhancedConsistency=",
                                     "Fs123SignalFile=",
 #ifdef M_ARENA_MAX
                                     "Fs123MallocArenaMax=",
