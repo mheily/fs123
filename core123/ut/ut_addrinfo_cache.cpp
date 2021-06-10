@@ -6,6 +6,7 @@
 #include <sstream>
 #include <random>
 #include <algorithm>
+#include <thread>
 
 using core123::str;
 core123::addrinfo_cache aic;

@@ -1,4 +1,5 @@
 #include <iostream>
+#include <thread>
 #include <core123/periodic.hpp>
 
 // FIXME - this "unit test" exercises the features of periodic, but it
