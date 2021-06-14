@@ -250,7 +250,7 @@ bool distrib_cache_message::recv(int fd){
         // about handlers that take a long time.
         distrib_cache_stats.distc_delayed_packets++;
         throw std::runtime_error(fmt("unacceptable timestamp: %.3f, now: %.3f.  Clock skew?  Corrupted data?  Badly delayed listener loop? Replay attack?",
-                                     now*1.e-3, tstamp*1.e-3));
+                                     tstamp*1.e-3, now*1.e-3));
     }
     
     // + read the sid, look it up and verify the hmac.
