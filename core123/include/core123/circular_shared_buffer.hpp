@@ -213,7 +213,7 @@ public:
 #ifndef __APPLE__
             auto rszlen = fgetxattr(fd, "user.circular_shared_buffer.record_size", rszbuf, sizeof(rszbuf));
 #else
-            auto rszlen = fgetxattr(fd, "user.circular_shared_buffer.record_size", rszbuf, sizeof(rszbuf), XATTR_NOFOLLOW);
+            auto rszlen = fgetxattr(fd, "user.circular_shared_buffer.record_size", rszbuf, sizeof(rszbuf), 0, 0);
 #endif
             if(rszlen >= 0 && size_t(rszlen) <= sizeof(rszbuf)){
                 record_sz = svto<size_t>(str_view{rszbuf, size_t(rszlen)});
