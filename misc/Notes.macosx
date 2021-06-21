@@ -1,3 +1,14 @@
+DO NOT USE THE fs123p7 CLIENT ON macOS 11 (Big Sur).
+
+As of June 2021, 'fs123p7 client' linked with OSXFuse 4.1.2 makes Big
+Sur extremely unstable: Processes can't be killed; /usr/bin/mount
+hangs; the only way to shut down is with a hard power-cycle.
+
+----------------
+
+The following notes are based on experience with fs123p7 on macOSX,
+through 10.12 (Monterey):
+
 It's possible to build fs123p7 on MacOS.  The prerequisites are
 available in MacPorts (and probably Fink and HomeBrew as well).
 
