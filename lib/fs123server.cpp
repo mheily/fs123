@@ -350,6 +350,7 @@ req::maybe_call_logger(int status) {
     // so there's not much point in eliding the call to evhttp_connection_get_peer.
     // Similarly for get_method and get_uri.  
     auto [remote, port] = get_peer();
+    unused(port); // silence gcc7 warning
     auto evmethod = evhttp_request_get_method(evhr);
     const char *evuri = evhttp_request_get_uri(evhr);
     auto length = evbuffer_get_length(evhttp_request_get_output_buffer(evhr));

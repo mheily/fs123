@@ -248,6 +248,7 @@
 #include <core123/svto.hpp>
 #include <core123/throwutils.hpp>
 #include <core123/traits.hpp>
+#include <core123/unused.hpp>
 #include <string>
 #include <map>
 #include <cstring>
@@ -534,6 +535,7 @@ public:
     // default are assigned from their defaults.
     void setopts_from_defaults() try {
         for(auto& [k, opt] : optmap_){
+            unused(k);
             opt.apply_default();
         }
     }
