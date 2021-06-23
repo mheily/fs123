@@ -71,7 +71,7 @@ struct example_handler: public fs123p7::handler_base{
             n = sz - offset;
         else
             n = len;
-        ::memcpy(buf, "world\n" + offset, n);
+        ::memcpy(buf, &"world\n"[offset], n);
         f_reply(move(reqp), n, validator, etag, estale_cookie, cc);
     }
     void l(fs123p7::req::up reqp) override{

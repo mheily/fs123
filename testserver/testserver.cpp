@@ -93,7 +93,7 @@ struct bench_handler: public fs123p7::handler_base{
         errno_reply(std::move(reqp), ENOTSUP, cc);
     }
 
-    secret_manager* get_secret_manager(){
+    secret_manager* get_secret_manager() override{
         return secret_mgr.get();
     }
     bench_handler(){}

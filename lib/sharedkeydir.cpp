@@ -46,7 +46,7 @@ sharedkeydir::get_indirect_sid(const std::string& name) /*override*/{
         throw std::runtime_error("sharedkeydir::get_sharedkey:  sid: '" + name + "' contains illegal characters");;
     auto exsid = indirect_cache.lookup(name);
     if(!exsid.expired())
-        return exsid;
+        return std::move(exsid);
     auto ret = refresh_indirect(name);
     indirect_cache.insert(name, ret, refresh_time);
     return ret;
