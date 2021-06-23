@@ -104,14 +104,13 @@ fs123p7_objs +=$(fs123p7_csrcs:%.c=%.o)
 ifndef NO_OPENSSL
 fs123p7 : LDLIBS += -lcrypto
 endif
-fs123p7 : LDLIBS += -lsodium
 FUSELIB?=fuse # if not  explicitly set
-fs123p7 : LDLIBS += -l$(FUSELIB) -ldl # -ldl is needed for static linking.  It's harmless otherwise, but dpkg-shlibdeps warns that it's a 'useless dependency'
-fs123p7 : LDLIBS += $(shell curl-config --libs) 
+fs123p7 : LDLIBS += -l$(FUSELIB)
 fs123p7 : LDLIBS += $(serverlibs)
+# curllibs: either 'curl-config --libs' or 'curl-config --static-libs'
+curllibs=$(shell curl-config $(if $(filter -static,$(LDFLAGS)), --static-libs, --libs))
+fs123p7 : LDLIBS += $(curllibs)
 fs123p7 : $(fs123p7_objs)
-
-LDLIBS += -lz # -lz is needed for static linking.  It's harmless otherwise, but dpkg-shlibdeps warns that it's a 'useless dependency'
 
 # link ut_diskcache links with some client-side .o files
 ut_diskcache : diskcache.o backend123.o 
