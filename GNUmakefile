@@ -26,6 +26,11 @@ LINK.o = $(CXX) $(LDFLAGS) $(TARGET_ARCH)
 # does something sensible:
 binaries=fs123p7
 
+fs123p7_is_a_directory=$(shell [ -d fs123p7 ] && echo yes)
+ifeq ($(fs123p7_is_a_directory), yes)
+$(error it looks like you're running make in the top-level of the gardenfs tree.  You can't do that.  cd to somewhere else and do 'make -f $(abstop/)GNUmakefile ...'  )
+endif
+
 unit_tests=ut_diskcache
 unit_tests += ut_seektelldir
 unit_tests += ut_content_codec

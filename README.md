@@ -65,9 +65,10 @@ other meta-build tools.
 To build, test and install the client, server, and libraries common to both:
 
 ```bash
-make
-make check
-make install
+mkdir build
+make -f ../GNUmakefile
+make -f ../GNUmakefile check
+make -f ../GNUmakefile install
 ```
 
 The install rule defaults to installing binaries in /usr/local, but
@@ -76,17 +77,16 @@ e.g.,
 
 
 ```bash
-make PREFIX=/absolute/path install
+make -f ../GNUmakefile PREFIX=/absolute/path install
 ```
 
 The GNUmakefile leaves targets and intermediate files in the
-directory from which it is run, but it also supports out-of-tree
-builds.  To avoid clutter, consider cd-ing to a build directory
-before calling make, e.g.,
+directory from which it is run.  The make command cannot be run from the top-level
+checkout, but it can be run from a sub-directory (as above), or elsewhere in the filesystem.
+E.g.,
 ```bash
-$ mkdir build
-$ cd build
-$ make -f ../GNUmakefile check
+$ cd /some/where/else
+$ make -f /path/to/repo/GNUmakefile ...
 ```
 
 The Makefile follows standard conventions
