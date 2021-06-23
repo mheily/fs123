@@ -18,6 +18,7 @@ using namespace core123;
 using namespace fs123p7;
 using namespace std;
 
+namespace {
 // DiagName=distrib_cache produces chatter about udp control messages,
 // the comings and goings of peers, etc.  In "steady state", it should
 // be O(#peers) messages per minute.
@@ -26,8 +27,24 @@ auto _distrib_cache = diag_name("distrib_cache");
 // request that passes through the cache.  It's *a lot* on a busy
 // server.
 auto _distrib_cache_requests = diag_name("distrib_cache_requests");
+auto _distrib_cache_discouraged = diag_name("distrib_cache_discouraged");
 auto _shutdown = diag_name("shutdown");
 
+bool is_multicast(const sockaddr_in& sai){
+    return (ntohl(sai.sin_addr.s_addr)>>28 == 14); // 224.X.X.X through 239.X.X.X, top 4 bits are 1110
+}
+
+string cache_control(const reply123& r) {
+    using namespace chrono;
+    return str_sep("", "max-age=", 
+                   duration_cast<seconds>(r.max_age()).count(),
+                   ",stale_while_revalidate=",
+                   duration_cast<seconds>(r.stale_while_revalidate).count());
+}
+} // namespace anon
+
+// N.B. distrib_cache_stats and distrib_cache_message aren't in the anon namespace
+// because they're referenced in distrib_cache_backend.hpp
 distrib_cache_statistics_t distrib_cache_stats;
 
 // distrib_cache_message:  encapsulate some of the details of sending, receiving
@@ -278,21 +295,6 @@ bool distrib_cache_message::recv(int fd){
         parts.push_back(rpop());
     return true;
 }
-
-namespace {
-
-bool is_multicast(const sockaddr_in& sai){
-    return (ntohl(sai.sin_addr.s_addr)>>28 == 14); // 224.X.X.X through 239.X.X.X, top 4 bits are 1110
-}
-
-string cache_control(const reply123& r) {
-    using namespace chrono;
-    return str_sep("", "max-age=", 
-                   duration_cast<seconds>(r.max_age()).count(),
-                   ",stale_while_revalidate=",
-                   duration_cast<seconds>(r.stale_while_revalidate).count());
-}
-} // namespace <anon>
 
 distrib_cache_backend::distrib_cache_backend(backend123* upstream, backend123* server, const std::string& _scope,
                                              secret_manager* _secret_mgr,
@@ -573,6 +575,8 @@ distrib_cache_backend::handle_peer_error(peer::sp p, const req123& req, std::exc
     // is it part of a pattern, etc.  Should we stop talking to that
     // peer?  Should we discourage everyone else from talking to that
     // peer?
+    DIAGf(_distrib_cache_discouraged, "handle_peer_error:  client side error requesting %s from %s",
+             req.urlstem.c_str(), p->url.c_str());
     complain(LOG_WARNING, e, "handle_peer_error:  client side error requesting %s from %s",
              req.urlstem.c_str(), p->url.c_str());
     send_discourage_peer(p->url);
@@ -591,10 +595,14 @@ distrib_cache_backend::handle_discourage_peer(const string& peerurl){
         distrib_cache_stats.distc_self_discourages_recvd++;
         return;
     }
-    // If this log message appears ahead of "peer->be->refresh threw"
-    // messages, it's an indicator that we could/should have acted on
+    // This function is on the receiving end of a multicast, so it can
+    // be called A LOT in a very short period.  Don't call complain() in
+    // this function because doing so can overwhelm syslog.
+    //
+    // If this diag appears ahead of "handle_peer_error: client side..."
+    // it's an indicator that we could/should have acted on
     // the 'discourage'.
-    complain(LOG_WARNING, "handle_discourage_peer:  peer=%s.  Ignored", peerurl.c_str());
+    DIAGf(_distrib_cache_discouraged, "handle_discourage_peer:  peer=%s.  Ignored", peerurl.c_str());
 #if 1
     // Do nothing.  If peerurl is "bad", we'll find out for ourselves
     // soon enough.
@@ -608,7 +616,7 @@ distrib_cache_backend::handle_discourage_peer(const string& peerurl){
     // of checking - which, if we're already teetering - might push
     // the whole network into an avalanche of failures.
     //
-    // Note that neither false positives nor false negatives results
+    // Note that neither false positive nor false negative results
     // for peer_is_down are terribly disruptive.  A false positive
     // means we use the origin server for traffic that might have been
     // successfully handled by the peer (but note that we already have
