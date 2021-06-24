@@ -520,8 +520,12 @@ OPTION(uint64_t, max_http_body_size, 500, "maximum bytes in incoming request HTT
 /* if unspecified, libevent times out connections after 50 seconds.  \
  * To avoid 'AH01102: error reading status line' problems with httpd \
  * ProxyPass, it's necessary to make exportd's timeout longer than  \
- * httpd's.  httpd defaults to 60, so we default to 120. */         \
-OPTION(uint64_t, max_http_timeout, 120, "http timeout on incoming request being complete");\
+ * httpd's.  httpd defaults to 60, but, of course, it's configurable. \
+ * Also, a quiet server might get 'pinged' by external health-monitors at \
+ * regular intervals, which can interact with the max_http_timeout. \
+ * To avoid such issues, the default is a prime number \
+ * of seconds, not particularly close to any "round" number of minutes or seconds. */  \
+OPTION(uint64_t, max_http_timeout, 769, "http timeout on incoming request being complete");\
 /* Calling back-to-back writes with sizes smaller than small multiples\
  * of MSS (TCP_MAXSEG) tickles the Nagle Algorithm which, in turn,\
  * interacts very badly with Delayed Ack resulting in                   \
