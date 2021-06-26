@@ -1,6 +1,7 @@
 #include "distrib_cache_backend.hpp"
 #include "fs123/httpheaders.hpp"
 #include <core123/strutils.hpp>
+#include <core123/streamutils.hpp>
 #include <core123/diag.hpp>
 #include <core123/scoped_timer.hpp>
 #include <core123/non_null_or_throw.hpp>
@@ -41,7 +42,21 @@ string cache_control(const reply123& r) {
                    ",stale_while_revalidate=",
                    duration_cast<seconds>(r.stale_while_revalidate).count());
 }
+
 } // namespace anon
+
+// if core123 had a networkutils.hpp, this would go in it...
+namespace core123{
+template<>
+struct insertone<struct sockaddr_in>{
+    static std::ostream& ins(std::ostream& os, const struct sockaddr_in& sain){
+        char sockname[std::max(INET_ADDRSTRLEN, INET6_ADDRSTRLEN)];
+        if(!::inet_ntop(sain.sin_family, &sain.sin_addr, sockname, sizeof(sockname)))
+            throw se("inet_ntop failed");
+        return os << sockname << ':' << ntohs(sain.sin_port);
+    }
+};
+}
 
 // N.B. distrib_cache_stats and distrib_cache_message aren't in the anon namespace
 // because they're referenced in distrib_cache_backend.hpp
@@ -189,6 +204,7 @@ distrib_cache_message::send(int sockfd, const struct sockaddr_in& dest,
 
 bool distrib_cache_message::recv(int fd){
     // See above for the "format".
+    distrib_cache_stats.distc_all_recvd++; // count everything - even the failures/errors
 
     // + check that we're not re-using *this
     using namespace core123;
@@ -199,7 +215,10 @@ bool distrib_cache_message::recv(int fd){
     // MSG_DONTWAIT may be superfluous because we've just poll'ed, but
     // it shouldn't do any harm, and protects if poll is subject to
     // "spurious" wakeups (can that happen?)
-    auto recvd = ::recv(fd, data.data(), data.size(), MSG_DONTWAIT|MSG_TRUNC);
+    sockaddr_in sain;
+    socklen_t sasz = sizeof(sain);
+    auto recvd = ::recvfrom(fd, data.data(), data.size(), MSG_DONTWAIT|MSG_TRUNC,
+                            (sockaddr*)&sain, &sasz);
     if(recvd < 0){
         if(errno == EAGAIN){
             complain(LOG_WARNING, "udp_listener:  unexpected EAGAIN from recv(MSG_DONTWAIT)");
@@ -214,6 +233,11 @@ bool distrib_cache_message::recv(int fd){
     if(size_t(recvd) > data.size()){ // see MSG_TRUNC
         complain(LOG_WARNING, "distrib_cache_message::recv:  message is too long.  Treating as empty");
         return false;
+    }
+    if(sasz != sizeof(sain)){
+        complain(LOG_WARNING, "distrib_cache_message::recv: recvrfrom address is not the same size as a sockaddr_in???");
+        // Don't give up just yet.  We don't really need the source address...
+        ::memset(&sain, 0, sizeof(sain));
     }
 
     DIAG(_distrib_cache, "recv(len=" + str(recvd) + "): " + quopri(str_view{&data[0], size_t(recvd)}));
@@ -266,8 +290,9 @@ bool distrib_cache_message::recv(int fd){
         // Don't cut this too thin.  See the comment in udp_listener
         // about handlers that take a long time.
         distrib_cache_stats.distc_delayed_packets++;
-        throw std::runtime_error(fmt("unacceptable timestamp: %.3f, now: %.3f.  Clock skew?  Corrupted data?  Badly delayed listener loop? Replay attack?",
-                                     tstamp*1.e-3, now*1.e-3));
+        throw std::runtime_error(fmt("unacceptable timestamp: %.3f, now: %.3f.  Packet from %s.  Clock skew?  Corrupted data?  Badly delayed listener loop? Replay attack?",
+                                     tstamp*1.e-3, now*1.e-3,
+                                     str(sain).c_str()));
     }
     
     // + read the sid, look it up and verify the hmac.
@@ -316,10 +341,7 @@ distrib_cache_backend::distrib_cache_backend(backend123* upstream, backend123* s
     myserver = make_unique<fs123p7::server>(sopts, *peer_handler);
     server_url = myserver->get_baseurl();
     sockaddr_in sain = myserver->get_sockaddr_in();
-    char sockname[INET_ADDRSTRLEN];
-    if(!inet_ntop(AF_INET, &sain.sin_addr, sockname, sizeof(sockname)))
-        throw se("inet_ntop failed");
-    complain(LOG_NOTICE, "Distributed cache server listening on %s port %d.  Unique name: %s\n", sockname, ntohs(sain.sin_port), get_uuid().c_str());
+    complain(LOG_NOTICE, "Distributed cache server listening on %s.  Unique name: %s\n", str(sain).c_str(), get_uuid().c_str());
 
     auto self = make_unique<peer>(get_uuid(), server_url, upstream_backend);
     peer_map.insert_peer(move(self));
@@ -727,11 +749,12 @@ distrib_cache_backend::udp_listener() {
         case 'A': handle_absent(string(msg.parts[1])); break;
         case 'D': handle_discourage_peer(string(msg.parts[1])); break;
         default:
+            distrib_cache_stats.distc_unrecognized_recvd++;
             complain("udp_listener: unexpected msg.parts[0]: " + strbe(msg.parts));
             break;
         }
     }catch(std::exception& e){
-        distrib_cache_stats.distc_recvd_errors++;
+        distrib_cache_stats.distc_errors_recvd++;
         complain(e, "exception thrown in udp_listener loop.  Continuing...");
         continue;
     }

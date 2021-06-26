@@ -129,6 +129,9 @@
     STATISTIC(distc_inserted_peers)    \
     STATISTIC(distc_removed_peers)     \
     STATISTIC(distc_replaced_peers)    \
+    STATISTIC(distc_all_recvd) \
+    STATISTIC(distc_unrecognized_recvd) \
+    STATISTIC(distc_errors_recvd) \
     STATISTIC(distc_presents_sent)   \
     STATISTIC(distc_presents_recvd)  \
     STATISTIC(distc_presents_checked)  \
@@ -140,7 +143,6 @@
     STATISTIC(distc_self_discourages_recvd) \
     STATISTIC(distc_peer_errors) \
     STATISTIC(distc_delayed_packets) \
-    STATISTIC(distc_recvd_errors) \
     STATISTIC(distc_server_refreshes)   \
     STATISTIC(distc_server_refresh_not_modified) \
     STATISTIC_NANOTIMER(distc_server_refresh_sec) \
