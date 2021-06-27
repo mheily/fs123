@@ -90,7 +90,7 @@
   preprocessor symbol CORE123_DIAG_FLOOD_ENABLE defined, then all
   diags in those files can be turned on by setting the
   core123::diag_opt_flood flag directly or via core123::set_diag_opts() or
-  the DIAG_OPTS enviroment variable. It will likely produce
+  the CORE123_DIAG_OPTS enviroment variable. It will likely produce
   a *LOT* of output, but is an easy way to test diag code,
   as well as quickly look into what is going on under the
   hood and empirically figure out what names one might want
@@ -179,15 +179,28 @@
      "%syslog" - messages are sent to syslog
      "%stderr" - messages are sent to file descriptor 2 (stderr)
      "%stdout" - messages are sent to file descriptor 1 (stdout)
+     "%csb"    - messages are sent ot a "circular shared buffer"
      ""        - empty string, equivalent to "%none"
 
-   The %syslog destination allows modifiers.  I.e., these do pretty
-   much what you'd expect:
+   The %syslog and %csb destinations allow modifiers.  I.e., these do
+   pretty much what you'd expect:
 
      %syslog              // with facility LOG_USER and level LOG_NOTICE
      %syslog%LOG_WARNING // with facility LOG_USER
      %syslog%LOG_LOCAL6  // with level LOG_NOTICE
      %syslog%LOG_WARNING%LOG_LOCAL6
+
+  The circular-shared buffer writes fixed-length records (padded with spaces)
+  to a file.  For example:
+
+     %csb^/some/where^reclen=256^N=100000
+
+  will create a 25.6MByte file at /some/where with 100k records, each
+  of length 256.  When the "write cursor" reaches the end of the file,
+  it wraps back around to the start.  Thus, one can safely write
+  high-volume diagnostics without fear of excessive resource
+  consumption, and without requiring external "log rolling" machinery.
+  See circular_shared_buffer.hpp for details.
 
   Formatting the diagnostics:
   ---------------------------
