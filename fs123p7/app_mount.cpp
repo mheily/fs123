@@ -1874,9 +1874,23 @@ void fs123_statfs(fuse_req_t req, fuse_ino_t) try {
     // then return a static struct.  It would be misleadingly stale,
     // but it wouldn't be misleadingly full of zeros.
     struct statvfs svb{};
-    // Let's try to say that we like I/O in units of Fs123Chunk.
-    svb.f_frsize=Fs123Chunk * KiB;
-    svb.f_bsize=svb.f_frsize;
+    // man statvfs on macOS says that
+    //       f_frsize   The size in bytes of the minimum unit of allocation on
+    //                  this file system.  (This corresponds to the f_bsize mem-
+    //                  ber of struct statfs.)
+    //
+    //       f_bsize    The preferred length of I/O requests for files on this
+    //                  file system.  (Corresponds to the f_iosize member of
+    //                  struct statfs.)
+    // So it would nice if we could set f_bsize to match our
+    // Fs123Chunk.  But we can't do that without also setting
+    // f_frsize to 128k.  And *that* cause anything that does
+    // arithmetic with block sizes (e.g., du) to produce
+    // crazy answers...
+    //
+    // Our best bet seems to be to leave everything at zero and
+    // hope that something in the libfuse and/or macFUSE layers
+    // continues to "do the right thing".
     return reply_statfs(req, &svb);
  }catch(...){
     return reply_err(req, EIO);
