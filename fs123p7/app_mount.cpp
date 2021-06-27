@@ -161,6 +161,7 @@ fuse_ino_t st_ino_mask = ~fuse_ino_t(0);
 // Fs123Chunk (in KiB) is set by an eponymous -o options or
 // environment variable.  See the assignments from envto in main()
 // for default values.
+static constexpr int KiB = 1024;
 size_t Fs123Chunk;
 
 // linkmap and attrcache cannot be staticly constructed because their
@@ -754,13 +755,15 @@ reply123 begetattr(fuse_ino_t ino, int max_stale){
     return begetattr(pino_name.first, pino_name.second, ino, max_stale);
 }
 
+// Not used on __APPLE__ - see below
+[[maybe_unused]]
 reply123 begetstatfs(fuse_ino_t ino) {
     reply123 ret;
     std::string name = ino_to_fullname(ino);
     req123 req = req123::statfsreq(name);
     berefresh(ino, req, &ret, false);
     return ret;
-}    
+}
 
 reply123 begetlink(fuse_ino_t ino) {
     reply123 ret;
@@ -876,15 +879,18 @@ void regular_maintenance(){
     if(::sysinfo(&si) == 0){ // no sew::, but we might not want it anyway.
         volatiles->load_average.store(si.loads[0]*si_load_inv);
     }
-#elif __has_include(<sys/sysctl.h>)
+#elif __has_include(<sys/sysctl.h>) // macOS, FreeBSD, maybe others.
     struct loadavg la;
-    size_t len;
-    if(sysctlbyname("vm.loadavg", &la, &len, NULL, 0) != 0)
+    size_t len = sizeof(la);
+    if(sysctlbyname("vm.loadavg", &la, &len, NULL, 0) == 0)
 	volatiles->load_average.store(float(la.ldavg[0])/la.fscale);
+    else
+	complain(LOG_WARNING, "sysctlbyname(\"vm.loadavg\", ...) failed. errno=%d", errno);
 #else
-#error "Don't know how to get load averages on this platform"
-    // popen("sysctl -n vm.loadavg") should work on OS X and FreeBSD
-    // popen("uptime") may be even more generic.  
+    #error "Don't know how to get load averages on this platform"
+    // popen("sysctl -n vm.loadavg") should work on macOS and FreeBSD, but
+    //    they should have been handled by __has_include(<sys/sysctl.h>)
+    // popen("uptime") might work.
     // google for getloadavg.c for a multiplatform monstrosity.
     // 
     // At the very least, issue a warning if volatiles->load_timeout_factor is non-zero.
@@ -1700,7 +1706,6 @@ void fs123_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, struct f
     // if(fi->fh == 0)
     //     return fs123_read_nochunk(req, ino, size, off, fi);
 
-    static constexpr int KiB = 1024;
     auto chunkbytes = Fs123Chunk*KiB;	// most math below is in bytes
     if( size > chunkbytes ){
         // we expect size to be <= FUSE_MAX_PAGES_PER_REQ*PAGE_SIZE
@@ -1825,6 +1830,7 @@ void fs123_release(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) tr
     reply_release(req);
  } CATCH_ERRS
 
+#ifndef __APPLE__
 void fs123_statfs(fuse_req_t req, fuse_ino_t ino) try {
     update_idle_timer();
     DIAGfkey(_llops, "statfs(%p, ino=%ju)", req, (uintmax_t)ino);
@@ -1837,6 +1843,45 @@ void fs123_statfs(fuse_req_t req, fuse_ino_t ino) try {
     auto svb = svto<struct statvfs>(reply.content);
     return reply_statfs(req, &svb);
 }CATCH_ERRS
+#else /* __APPLE__ */
+// DANGER - calling 'be-anything' in fs123_statfs on macOS (Big Sur,
+// maybe others) is catastrophically bad.  It somehow slowly deadlocks
+// the whole system.  Conjecture: /sbin/mount "locks" all filesystem
+// activity, and then calls statfs.  So when we try to access files in
+// the diskcache, we deadlock with /sbin/mount: we're waiting for
+// mount to release the lock, mount is waiting for us to return.  This
+// has disastrous and far-reaching consequences because so many basic
+// functions call mount (or something equivalent), e.g., the finder,
+// the shutdown code, etc.  If shutdown deadlocks, the only way out is
+// a hard power-cycle!
+//
+// The workaround is to just turn this around with as little
+// interaction with the rest of the OS as possible.  To be safe, we
+// even avoid DIAGs, complaints, and updating the idle timer.
+void fs123_statfs(fuse_req_t req, fuse_ino_t) try {
+    // macOS (11.4) with macFUSE (4.1.2 and 4.2.0) appears to ignore what we
+    // put in the following fields:
+    //   f_bsize   <- f_frsize
+    //   f_flags   <- 3 (presumably depends on -o suid)
+    //   f_namemax <- 255
+    // Furthermore, if f_frsize is 0, it gets set to 4096.
+    // On the other hand, it does take our word for it about:
+    //   f_blocks, f_bfree, f_bavail
+    //   f_files,  f_free,  f_avail
+    // 
+    // If we really want to report something about files and blocks,
+    // we could call begetstatfs once and for all in fs123_init, and
+    // then return a static struct.  It would be misleadingly stale,
+    // but it wouldn't be misleadingly full of zeros.
+    struct statvfs svb{};
+    // Let's try to say that we like I/O in units of Fs123Chunk.
+    svb.f_frsize=Fs123Chunk * KiB;
+    svb.f_bsize=svb.f_frsize;
+    return reply_statfs(req, &svb);
+ }catch(...){
+    return reply_err(req, EIO);
+ }
+#endif /* __APPLE__ */
 
 void do_forget(fuse_ino_t ino, uint64_t nlookup){
     DIAGfkey(_llops, "do_forget(ino=%ju, nlookup=%ju)\n", (uintmax_t)ino, (uintmax_t)nlookup);

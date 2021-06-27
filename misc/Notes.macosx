@@ -1,15 +1,20 @@
-DO NOT USE THE fs123p7 CLIENT ON macOS 11 (Big Sur).
+THE fs123p7 CLIENT ON macOS 11 (Big Sur) IS EXPERIMENTAL.
 
-As of June 2021, 'fs123p7 client' linked with OSXFuse 4.1.2 makes Big
-Sur extremely unstable: Processes can't be killed; /usr/bin/mount
-hangs; the only way to shut down is with a hard power-cycle.
+A bug (which may now be worked around) caused the 'fs123p7 client'
+linked with OSXFuse 4.1.2 to make the entire Big Sur OS extremely
+unstable: Processes can't be killed; /usr/bin/mount hangs; the only
+way to shut down is with a hard power-cycle.
+
+A tentative workaround is in place, and the bad behavior seems to be
+eliminated, but the code should still be considered EXPERIMENTAL.
 
 ----------------
 
-The following notes are based on experience with fs123p7 on macOSX,
-through 10.12 (Monterey):
+The following notes are mostly based on experience with fs123p7 on
+macOSX, through 10.12 (Monterey), and on some limited experience
+with 11.4 (Big Sur).
 
-It's possible to build fs123p7 on MacOS.  The prerequisites are
+It's possible to build fs123p7 on macOS.  The prerequisites are
 available in MacPorts (and probably Fink and HomeBrew as well).
 
 These are the prerequisites in MacPorts:
@@ -22,22 +27,28 @@ port install coreutils
 In 2020, OSXFuse changed its licensing terms, making it impossible
 for MacPorts to maintain its own copy of libfuse.
 
-However, it is still possible to get OSXfuse from osxfuse.github.io.
+However, it is still possible to get macFUSE from osxfuse.github.io.
 The default installation puts headers in /usr/local/include/osxfuse
 and librares in /usr/local/lib.
 
-With the prereqs in place, something like this works:
+With the prereqs in place, something like this works with older
+versions of osxFuse:
 
 (PATH=/opt/local/libexec/gnubin:/opt/local/bin:/usr/bin:/usr/sbin:/sbin; FUSELIB=osxfuse CPPFLAGS="-I/opt/local/include -I/usr/local/include/osxfuse -Wno-attributes" LDFLAGS="-L/opt/local/lib -L/usr/local/lib" make -f @@@path-to-fs123-toplevel@@@/GNUmakefile -j )
 
-The binary can be installed into /usr/local/bin with a plain-old cp.  Or:
+On BigSur (11.4) with macFUSE 4.1.2 or 4.2.0, the fuse includes and
+libraries have moved.  Something like this should work:
 
-( PATH=/opt/local/libexec/gnubin:/opt/local/bin:/usr/bin:/bin:/usr/sbin:/sbin; FUSELIB=osxfuse CPPFLAGS="-I/opt/local/include -I/usr/local/include/osxfuse -Wno-attributes" LDFLAGS="-L/opt/local/lib -L/usr/local/lib" sudo make -f @@@path-to-fs123-toplevel@@@/GNUmakefile -j install )
+CPPFLAGS=-I/opt/local/include LDFLAGS=-L/opt/local/lib TARGET_ARCH=-mmacosx-version-min=11.2 make -f @@@path-to-fs123-toplevel@@@/GNUmakefile -j )
+
+The binary can be installed into /usr/local/bin with a plain-old cp.  Or with:
+
+... make install
 
 which will install binaries, the libfs123.a static library and header
 files in /usr/local.
 
-It's possible to run 'make check', but it requires
+It's possible to run 'make check', but it requires macports'
 /opt/local/libexec/gnubin in PATH because /usr/bin/mktemp doesn't
 recognize -p.
 
