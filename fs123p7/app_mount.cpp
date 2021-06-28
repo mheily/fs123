@@ -755,8 +755,6 @@ reply123 begetattr(fuse_ino_t ino, int max_stale){
     return begetattr(pino_name.first, pino_name.second, ino, max_stale);
 }
 
-// Not used on __APPLE__ - see below
-[[maybe_unused]]
 reply123 begetstatfs(fuse_ino_t ino) {
     reply123 ret;
     std::string name = ino_to_fullname(ino);
@@ -1830,7 +1828,7 @@ void fs123_release(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) tr
     reply_release(req);
  } CATCH_ERRS
 
-#ifndef __APPLE__
+[[maybe_unused]] // not with __APPLE__
 void fs123_statfs(fuse_req_t req, fuse_ino_t ino) try {
     update_idle_timer();
     DIAGfkey(_llops, "statfs(%p, ino=%ju)", req, (uintmax_t)ino);
@@ -1843,59 +1841,6 @@ void fs123_statfs(fuse_req_t req, fuse_ino_t ino) try {
     auto svb = svto<struct statvfs>(reply.content);
     return reply_statfs(req, &svb);
 }CATCH_ERRS
-#else /* __APPLE__ */
-// DANGER - calling 'be-anything' in fs123_statfs on macOS (Big Sur,
-// maybe others) is catastrophically bad.  It somehow slowly deadlocks
-// the whole system.  Conjecture: /sbin/mount "locks" all filesystem
-// activity, and then calls statfs.  So when we try to access files in
-// the diskcache, we deadlock with /sbin/mount: we're waiting for
-// mount to release the lock, mount is waiting for us to return.  This
-// has disastrous and far-reaching consequences because so many basic
-// functions call mount (or something equivalent), e.g., the finder,
-// the shutdown code, etc.  If shutdown deadlocks, the only way out is
-// a hard power-cycle!
-//
-// The workaround is to just turn this around with as little
-// interaction with the rest of the OS as possible.  To be safe, we
-// even avoid DIAGs, complaints, and updating the idle timer.
-void fs123_statfs(fuse_req_t req, fuse_ino_t) try {
-    // macOS (11.4) with macFUSE (4.1.2 and 4.2.0) appears to ignore what we
-    // put in the following fields:
-    //   f_bsize   <- f_frsize
-    //   f_flags   <- 3 (presumably depends on -o suid)
-    //   f_namemax <- 255
-    // Furthermore, if f_frsize is 0, it gets set to 4096.
-    // On the other hand, it does take our word for it about:
-    //   f_blocks, f_bfree, f_bavail
-    //   f_files,  f_free,  f_avail
-    // 
-    // If we really want to report something about files and blocks,
-    // we could call begetstatfs once and for all in fs123_init, and
-    // then return a static struct.  It would be misleadingly stale,
-    // but it wouldn't be misleadingly full of zeros.
-    struct statvfs svb{};
-    // man statvfs on macOS says that
-    //       f_frsize   The size in bytes of the minimum unit of allocation on
-    //                  this file system.  (This corresponds to the f_bsize mem-
-    //                  ber of struct statfs.)
-    //
-    //       f_bsize    The preferred length of I/O requests for files on this
-    //                  file system.  (Corresponds to the f_iosize member of
-    //                  struct statfs.)
-    // So it would nice if we could set f_bsize to match our
-    // Fs123Chunk.  But we can't do that without also setting
-    // f_frsize to 128k.  And *that* cause anything that does
-    // arithmetic with block sizes (e.g., du) to produce
-    // crazy answers...
-    //
-    // Our best bet seems to be to leave everything at zero and
-    // hope that something in the libfuse and/or macFUSE layers
-    // continues to "do the right thing".
-    return reply_statfs(req, &svb);
- }catch(...){
-    return reply_err(req, EIO);
- }
-#endif /* __APPLE__ */
 
 void do_forget(fuse_ino_t ino, uint64_t nlookup){
     DIAGfkey(_llops, "do_forget(ino=%ju, nlookup=%ju)\n", (uintmax_t)ino, (uintmax_t)nlookup);
@@ -2777,7 +2722,11 @@ try {
     }
 
     fs123_oper.ioctl = fs123_ioctl;
+#ifndef __APPLE__
+    // See the statfs section in ../misc/Notes.macosx for why it's
+    // safer to leave this one untouched on macOS.
     fs123_oper.statfs = fs123_statfs;
+#endif
 
     // Unconditionally add some mount-options.  If we ever need to
     // reverse these (unlikely), see the code in that handles subtype=

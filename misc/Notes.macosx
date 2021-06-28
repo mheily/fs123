@@ -188,3 +188,103 @@ seems to work.
 
 To see Fuse filesystems on the desktop, open Finder->Preferences and
 enable "Connected servers" in "Show these items on desktop".
+
+================= statfs issues ================
+
+MacOS calls statfs A LOT.  
+
+How much is a lot?  Within the first few seconds of being mounted on a
+fairly quiet (one interactive user) Big Sur, fs123's statfs callback
+is called by these processes.
+
+bash-3.2$ ps -p 93,96,142,149,848,3118,3141,3142,3143,3146,3174,3201,3207,3217,3268,6875,8838,8842
+  PID TTY           TIME CMD
+   93 ??         1:07.31 /System/Library/Frameworks/CoreServices.framework/Frameworks/Metadata.framework/Support/mds
+   96 ??         1:01.35 /usr/libexec/diskarbitrationd
+  142 ??         0:00.47 /System/Library/CoreServices/coreservicesd
+  149 ??         0:01.90 /System/Library/CoreServices/loginwindow.app/Contents/MacOS/loginwindow console
+  848 ??         0:00.54 /usr/sbin/filecoordinationd
+ 3118 ??         0:00.18 /System/Library/CoreServices/sharedfilelistd
+ 3141 ??         0:12.28 /System/Library/CoreServices/ControlCenter.app/Contents/MacOS/ControlCenter
+ 3142 ??         0:01.60 /System/Library/CoreServices/SystemUIServer.app/Contents/MacOS/SystemUIServer
+ 3143 ??         0:21.28 /System/Library/CoreServices/Finder.app/Contents/MacOS/Finder
+ 3146 ??         0:43.19 /System/Library/PrivateFrameworks/UniversalAccess.framework/Versions/A/Resources/AXVisualSupportAgent.app/Contents/MacOS/AXVisualSupportAgent launchd -s
+ 3174 ??         0:00.36 /System/Library/CoreServices/sharedfilelistd
+ 3201 ??         0:00.08 /System/Library/Frameworks/InputMethodKit.framework/Resources/imklaunchagent
+ 3207 ??         0:08.33 /usr/libexec/sharingd
+ 3217 ??         0:00.28 /System/Library/CoreServices/TextInputMenuAgent.app/Contents/MacOS/TextInputMenuAgent
+ 3268 ??         0:00.30 /System/Library/CoreServices/CoreLocationAgent.app/Contents/MacOS/CoreLocationAgent
+ 6875 ??         7:04.03 /Applications/Firefox.app/Contents/MacOS/firefox
+bash-3.2$ 
+
+There's a lurking danger that if something hangs inside our statfs
+callback, one or more of these system services hangs, and the whole
+system becomes unstable.  I don't have a clear picture of the exact
+deadlock, but when statvfs uses the disk cache, *something* deadlocks
+and we can lock up the whole machine (NOT just the fs123 mount point).
+It's not hard to get into a state where the only way to shut down is a
+hard power cycle.
+
+The code below was briefly our "solution" to this problem, and may be
+useful in the future.  But for now, we've simplified even further, by
+NULL-ing out the lowlevel statfs callback when __APPLE__ is #defined.
+We just accept the macFUSE default implementation of the statfs
+callback.  Hopefully, macFUSE has enough experience with this to
+reliably avoid deadlocks.
+
+#ifndef __APPLE__
+... <original recipe Linux implementation of fs123_statfs>
+#else
+// DANGER - calling 'be-anything' in fs123_statfs on macOS (Big Sur,
+// maybe others) is catastrophically bad.  It somehow slowly deadlocks
+// the whole system.  Conjecture: /sbin/mount "locks" all filesystem
+// activity, and then calls statfs.  So when we try to access files in
+// the diskcache, we deadlock with /sbin/mount: we're waiting for
+// mount to release the lock, mount is waiting for us to return.  This
+// has disastrous and far-reaching consequences because so many basic
+// functions call mount (or something equivalent), e.g., the finder,
+// the shutdown code, etc.  If shutdown deadlocks, the only way out is
+// a hard power-cycle!
+//
+// The workaround is to just turn this around with as little
+// interaction with the rest of the OS as possible.  To be safe, we
+// even avoid DIAGs, complaints, and updating the idle timer.
+void fs123_statfs(fuse_req_t req, fuse_ino_t) try {
+    // macOS (11.4) with macFUSE (4.1.2 and 4.2.0) appears to ignore what we
+    // put in the following fields:
+    //   f_bsize   <- f_frsize
+    //   f_flags   <- 3 (presumably depends on -o suid)
+    //   f_namemax <- 255
+    // Furthermore, if f_frsize is 0, it gets set to 4096.
+    // On the other hand, it does take our word for it about:
+    //   f_blocks, f_bfree, f_bavail
+    //   f_files,  f_free,  f_avail
+    // 
+    // If we really want to report something about files and blocks,
+    // we could call begetstatfs once and for all in fs123_init, and
+    // then return a static struct.  It would be misleadingly stale,
+    // but it wouldn't be misleadingly full of zeros.
+    struct statvfs svb{};
+    // man statvfs on macOS says that
+    //       f_frsize   The size in bytes of the minimum unit of allocation on
+    //                  this file system.  (This corresponds to the f_bsize mem-
+    //                  ber of struct statfs.)
+    //
+    //       f_bsize    The preferred length of I/O requests for files on this
+    //                  file system.  (Corresponds to the f_iosize member of
+    //                  struct statfs.)
+    // So it would nice if we could set f_bsize to match our
+    // Fs123Chunk.  But we can't do that without also setting
+    // f_frsize to 128k.  And *that* cause anything that does
+    // arithmetic with block sizes (e.g., du) to produce
+    // crazy answers...
+    //
+    // Our best bet seems to be to leave everything at zero and
+    // hope that something in the libfuse and/or macFUSE layers
+    // continues to "do the right thing".
+    return reply_statfs(req, &svb);
+ }catch(...){
+    return reply_err(req, EIO);
+ }
+#endif /* __APPLE__ */
+
