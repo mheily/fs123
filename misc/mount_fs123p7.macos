@@ -1,0 +1,30 @@
+#!/bin/dash
+
+# On macOS, the fs123p7 binary misbehaves if it calls daemon() or
+# fuse_daemonize().  We must call it with -f.  This makes it
+# problematic to put an fs123p7 mount in /etc/fstab.  As a
+# workaround/hack, install this file (rather than a symlink) in:
+#
+#   /Library/Filesystems/fs123p7.ps/Contents/Resources/mount_fs123p7
+#
+# which will be run when the macOS fstab infrastructure tries to mount
+# a filesystem of type fs123p7.
+#
+# Although
+#
+#    nohup ... </dev/null >>... 2>&1 &
+#
+# isn't *quite* the same as daemonize, it appears to be close enough.
+#
+# On Big Sur, this fstab entry appears to "work" (YMMV):
+#
+#   http://... /fs123/exports fs123p7 ro,allow_other,Fs123LogDestination=/var/log/fs123/exports.clog,Fs123CacheDir=/var/fs123/cache,Fs123CacheMaxMBytes=8000 0 0
+#
+# Note that it's not necessary to create any directories in advance.
+# /fs123 is automounted by the macOS fstab infrastructure,
+# /var/log/fs123 is created by this script, and /var/fs123/cache will
+# be created by fs123p7.
+
+cd /
+mkdir -p /var/log/fs123
+nohup /usr/local/bin/fs123p7 mount -f "$@" </dev/null >>/var/log/fs123/fstab.log 2>&1 &

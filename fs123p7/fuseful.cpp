@@ -675,10 +675,9 @@ int fuseful_main_ll(fuse_args *args, const fuse_lowlevel_ops& llops,
 		    "fuse_daemonize cannot be used reliably on macOS.\n"
 		    "Use -f with nohup, redirects and/or & to run in the background on macOS.\n");
 	    throw se(EINVAL, "can only run in foreground (-f) on macOS");
-	    // This makes it even harder to put an fs123 filesystem in
-	    // /etc/fstab.  But there doesn't seem to be much choice.
-	    // On Big Sur, calling either fuse_daemonize or daemon()
-	    // gives us a non-functional mount.
+	    // This makes it tricky to put an fs123p7 filesystem in
+	    // /etc/fstab on macOS.  See ../misc/Notes.macosx and
+	    // ../misc/mount_fs123p7.macos for suggestions.
 	}
 #endif
 

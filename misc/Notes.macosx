@@ -139,16 +139,6 @@ N.B.  I think the -w is only  necessary the very first time it's loaded.
 -------
 Mounting the client:
 
-WARNING:  No fstab on Big Sur:
-
-Unfortunately, neither fstab nor automount is happy with
-daemons that  don't daemonize, and it seems that we can't
-daemonize on Big Sur.  See:
-   https://github.com/mpartel/bindfs/issues/87
-for some notes about starting fuse wit launchctl.
-
-Pre-Big Sur there are more options:
-
 On MacOS there's no avoiding the automounter.  The file /etc/fstab
 is actually part of the automounter configuration via these two lines
 in /etc/auto_master:
@@ -161,36 +151,40 @@ option, while the second deals with everything else.
 
 To edit (or create!) an /etc/fstab on MacOS, use vifs(1).
 
-Lines are in the usual format, so a line like this seems to work:
+Lines are in the usual format.  The simplest fstab entry might
+look something like:
 
-http://sockeye:8800 /fs123/alfaPhotos fs123p7 allow_other 0 0
+http://sockeye:8800 /fs123/alfaPhotos fs123p7 ro,allow_other 0 0
 
-Note that this automatically creates /fs123.  We don't have to
-create it ourselves.
+But more options are possible, e.g.,
 
-It's not clear where the "right place" to put a diskcache is
-on OSX.  Since /fs123 is automounted, it seems best to avoid
-there.  /var/fs123/cache seems to work.
+http://sockeye:8801 /fs123/alfaPhotos fs123p7 ro,allow_other,Fs123CacheDir=/var/fs123/cache,Fs123CacheMaxMBytes=8000,Fs123LogDestination=/var/log/fs123/alfaPhotos.log 0 0
 
-Also, the default log destination doesn't seem to show up anywhere.
-
-This line *seems* to work in fstab:
-
-http://chum:8801 /fs123/cannon fs123p7 ro,allow_other,Fs123CacheDir=/var/fs123/cache,Fs123CacheMaxMBytes=8000,Fs123LogDestination=/tmp/fs123-cannon.log 0 0
+Note that the automount infrastructure automatically dynamically
+creates and destroys /fs123.  We don't have to create it ourselves.
+Also note that /Volumes is managed by diskarbitrationd on MacOS.  It
+seems prudent for fstab entries to avoid designating mount-points in
+/Volumes.
 
 The 'filesytem type' (fs123p7) maps to this executable on MacOS
 
 /Library/Filesystems/fs123p7.fs/Contents/Resources/mount_fs123p7
 
-Therefore, we have to do this once:
+Therefore, we have to create an executable file at that location.
+It's not possible for it to be a symlink because on macOS the fs123p7
+binary can't daemonize itself.  Therefore, we make it a very short
+shell script.  Execute these commands one time:
 
-sudo mkdir -p /Library/Filesystems/fs123p7.fs/Contents/Resources
-sudo ln -s /usr/local/bin/mount.fs123p7 /Library/Filesystems/fs123p7.fs/Contents/Resources/mount_fs123p7
+  sudo mkdir -p /Library/Filesystems/fs123p7.fs/Contents/Resources
+  sudo cp .../misc/mount_fs123p7.macos /Library/Filesystems/fs123p7.fs/Contents/Resources/mount_fs123p7
+  sudo chmod +x /Library/Filesystems/fs123p7.fs/Contents/Resources/mount_fs123p7
 
-N.B.  /Volumes is managed by diskarbitrationd on MacOS.  It may be
-just fine to put things in /Volumes via /etc/fstab, but unless there's
-a compelling reason, maybe it's better to steer clear and put
-stuff somewhere conflict-free, e.g., /fs123.
+The script, mount_fs123p7.macos, is in the misc/ directory of this
+repo.
 
-To see Fuse fileysystems on the desktop, open Finder->Preferences and
+It's not clear where the "right place" to put a diskcache is on OSX.
+Since /fs123 is automounted, it's not an option.  /var/fs123/cache
+seems to work.
+
+To see Fuse filesystems on the desktop, open Finder->Preferences and
 enable "Connected servers" in "Show these items on desktop".
