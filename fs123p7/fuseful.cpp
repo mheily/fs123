@@ -8,6 +8,7 @@
 #include <core123/throwutils.hpp>
 #include <core123/envto.hpp>
 #include <core123/stats.hpp>
+#include <core123/pathutils.hpp>
 #include <atomic>
 #include <string>
 #include <unistd.h>
@@ -668,6 +669,18 @@ int fuseful_main_ll(fuse_args *args, const fuse_lowlevel_ops& llops,
         int foreground;
         if( fuse_parse_cmdline(args, &mountpoint, &multithreaded, &foreground) == -1 )
             throw se(EINVAL, "fuse_parse_cmdline returned -1.  Non-existent mountpoint?  Misspelled -option??");
+#if defined __APPLE__
+	if(!foreground){
+	    fprintf(stderr,
+		    "fuse_daemonize cannot be used reliably on macOS.\n"
+		    "Use -f with nohup, redirects and/or & to run in the background on macOS.\n");
+	    throw se(EINVAL, "can only run in foreground (-f) on macOS");
+	    // This makes it even harder to put an fs123 filesystem in
+	    // /etc/fstab.  But there doesn't seem to be much choice.
+	    // On Big Sur, calling either fuse_daemonize or daemon()
+	    // gives us a non-functional mount.
+	}
+#endif
 
         // fuse_parse_cmdline mallocs the mountpoint.  Copying it to
         // g_mountpoint and then freeing it silences the last valgrind
@@ -686,11 +699,14 @@ int fuseful_main_ll(fuse_args *args, const fuse_lowlevel_ops& llops,
         // (or used 1 where we currently use g_mount_dotdot_ino).  But
         // it's not that hard to get it "right"...
 	struct stat mount_dotdot_sb;
-	if(lstat((g_mountpoint + "/..").c_str(), &mount_dotdot_sb) == 0)
+	auto [mount_dotdot, mount_filepart] = pathsplit(g_mountpoint);
+	if(mount_dotdot.empty())
+	    mount_dotdot = ".";
+	if(lstat((mount_dotdot).c_str(), &mount_dotdot_sb) == 0)
 	    g_mount_dotdot_ino = mount_dotdot_sb.st_ino;
 	else{
-	    complain(LOG_WARNING, "Couldn't lstat(%s/..): %m:  Setting g_mount_dotdot_ino=1 and hope for the best",
-		   g_mountpoint.c_str());
+	    complain(LOG_WARNING, "Couldn't lstat(%s/..): errno=%d:  Setting g_mount_dotdot_ino=1 and hope for the best",
+		     g_mountpoint.c_str(), errno);
 	    g_mount_dotdot_ino = 1;
 	}
         

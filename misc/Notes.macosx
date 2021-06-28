@@ -139,6 +139,16 @@ N.B.  I think the -w is only  necessary the very first time it's loaded.
 -------
 Mounting the client:
 
+WARNING:  No fstab on Big Sur:
+
+Unfortunately, neither fstab nor automount is happy with
+daemons that  don't daemonize, and it seems that we can't
+daemonize on Big Sur.  See:
+   https://github.com/mpartel/bindfs/issues/87
+for some notes about starting fuse wit launchctl.
+
+Pre-Big Sur there are more options:
+
 On MacOS there's no avoiding the automounter.  The file /etc/fstab
 is actually part of the automounter configuration via these two lines
 in /etc/auto_master:

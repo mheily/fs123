@@ -156,7 +156,7 @@ export includedir?=$(prefix)/include
 install : $(binaries) $(libs)
 	mkdir -p $(DESTDIR)$(includedir) $(DESTDIR)$(libdir) $(DESTDIR)$(bindir) $(DESTDIR)$(sbindir)
 	cp -a $(binaries) $(DESTDIR)$(bindir)
-	ln -s $(bindir)/fs123p7 $(DESTDIR)$(sbindir)/mount.fs123p7
+	ln -s -f $(bindir)/fs123p7 $(DESTDIR)$(sbindir)/mount.fs123p7
 	cp -a $(libs) $(DESTDIR)$(libdir)
 	cp -a $(top/)include/fs123 $(DESTDIR)$(includedir)
 	$(MAKE) -f $(top/)/core123/GNUmakefile install
