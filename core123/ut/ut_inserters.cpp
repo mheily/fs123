@@ -164,5 +164,23 @@ int main(int, char **){
     coutsz = ostream_size(std::cout);
     std::cout << "ostream_size(cout) (again) : " << coutsz << "\n";
 
+    // Test the std::optional template specialization...
+    {
+        std::ostringstream oss;
+        std::optional<int> oi;
+        oss << ins(oi);
+        EQUAL(str(oi), "<unset>");
+        oi = 19;
+        EQUAL(str(oi), "19");
+        oss << " " << ins(oi);
+        std::optional<std::chrono::milliseconds> omillis;
+        EQUAL(str(omillis), "<unset>");
+        oss << " " << ins(omillis);
+        omillis = std::chrono::milliseconds(1234);
+        EQUAL(str(omillis), "1.234000000");
+        oss << " " << ins(omillis);
+        EQUAL(oss.str(), "<unset> 19 <unset> 1.234000000");
+    }
+
     return utstatus();
 }

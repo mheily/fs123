@@ -223,6 +223,44 @@ inline auto svsplit_any(str_view s, str_view delim, size_t start = 0)
     return v;
 }
 
+// split1 - split the argument, either a string or a str_view (or
+// anything with analogous substr, find and value_type members), into a
+// std::pair('before', 'after').  'Before' has the same type as the
+// argument.  'After' is a std::optional, which contains a value if
+// and only if the delim appears in the argument.
+//
+// Note that split1-ing a string will create a new string by copying
+// data from s.  If you really want avoid "unnecessary" copying,
+// then do something like:
+//    [sv, opt_sv] = split1(str_view(s));
+// 
+template <typename STR> // either string or string_view
+std::pair<STR, std::optional<STR>>
+split1(const STR& s, typename STR::value_type delim){
+    auto where = s.find(delim);
+    std::optional<STR> rest;
+    if(where != std::string::npos)
+        rest = s.substr(where+1);
+    return {s.substr(0, where), rest};
+}
+
+// rsplit1 - like split1, but use rfind and return a
+// pair<optional<STR>, STR> where the first element contains a value
+// if and only if the delim appears in the argument.
+//
+// Note that rsplit1(path, '/') is a lot like pathsplit, but (thanks
+// to std::optional) isn't quite as tricky to use.
+template <typename STR> // either string or string_view
+std::pair<std::optional<STR>, STR>
+rsplit1(const STR& s, typename STR::value_type delim){
+    auto where = s.rfind(delim);
+    std::optional<STR> rest;
+    if(where != std::string::npos)
+        return {s.substr(0, where), s.substr(where+1)};
+    else
+        return {{}, s};
+}
+
 // conveniently encode a cstring for printing using C literal conventions
 inline auto cstr_encode(str_view s) {
     std::string ret;

@@ -1,6 +1,7 @@
 #pragma once
 #include <iostream>
 #include <core123/diag.hpp>
+#include <core123/strutils.hpp>
 
 // Very minimal unit test header with some handy macros
 // to test and keep count of failures, and
@@ -10,8 +11,8 @@ namespace {
 static auto _ut = core123::diag_name("ut");
 static unsigned utfail = 0, utpass = 0;
 
-#define EQUAL(x, y) if ((x) != (y)) { utfail++; std::cerr << __LINE__ << ": FAILED " #x " " << (x) << " != " #y " " << (y) << std::endl; } else {utpass++; DIAG(_ut, "PASSED " #x " " << (x) << " == " #y " " << (y));}
-#define NOTEQUAL(x, y) if ((x) == (y)) { utfail++; std::cerr << __LINE__ << ": FAILED " #x " line " << __LINE__ << (x) << " != " #y " " << (y) << std::endl; } else {utpass++; DIAG(_ut, "PASSED " #x " " << (x) << " == " #y " " << (y));}
+#define EQUAL(x, y) if ((x) != (y)) { utfail++; std::cerr << __LINE__ << ": FAILED " #x " " << core123::ins(x) << " != " #y " " << core123::ins(y) << std::endl; } else {utpass++; DIAG(_ut, "PASSED " #x " " << core123::ins(x) << " == " #y " " << core123::ins(y));}
+#define NOTEQUAL(x, y) if ((x) == (y)) { utfail++; std::cerr << __LINE__ << ": FAILED " #x " line " << __LINE__ << core123::ins(x) << " != " #y " " << core123::ins(y) << std::endl; } else {utpass++; DIAG(_ut, "PASSED " #x " " << core123::ins(x) << " == " #y " " << core123::ins(y));}
 #define CHECK(expr) if(expr) { utpass++; DIAG(_ut, "PASSED " #expr " is true");} else {utfail++; std::cerr << __LINE__ << ": FAILED " << #expr << " is false\n";}
 
 #define EQSTR(x, y) _EQSTR(x, y, #x)

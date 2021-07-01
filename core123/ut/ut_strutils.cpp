@@ -17,6 +17,8 @@ using core123::urlescape;
 using core123::hexdump;
 using core123::svsplit_exact;
 using core123::svsplit_any;
+using core123::split1;
+using core123::rsplit1;
 using core123::str_view;
 using core123::CILess;
 
@@ -48,6 +50,18 @@ std::ostream& operator<<(std::ostream& os, const CIMap::iterator &p){
 
 #define EQUALV(a, b) eqv(a, b, #a, #b) ? (utpass++) : (utfail++)
 #define COMMA ,
+
+void chksplit1(const std::string& in, char delim, std::pair<const std::string, std::optional<std::string>> expected){
+    auto ret = split1(in, delim);
+    EQUAL(ret.first, expected.first);
+    EQUAL(ret.second, expected.second);
+}
+
+void chkrsplit1(const std::string& in, char delim, std::pair<std::optional<std::string>, const std::string> expected){
+    auto ret = rsplit1(in, delim);
+    EQUAL(ret.first, expected.first);
+    EQUAL(ret.second, expected.second);
+}
 
 int main(int, char **) {
     EQUALV(svsplit_exact("x", "x"), {"" COMMA ""});
@@ -81,6 +95,20 @@ int main(int, char **) {
     EQUALV(svsplit_any("a, b, c  d", ""), {"a, b, c  d"});
     EQUALV(svsplit_any("", ""), {""});
     EQUALV(svsplit_any("  ", ""), {"  "});
+
+    chksplit1("a,b,,,  ", ',', {"a", {"b,,,  "}});
+    chksplit1("a,b", ',', {"a", {"b"}});
+    chksplit1("a,", ',', {"a", {""}});
+    chksplit1("a", ',', {"a", {}});
+    chksplit1(",", ',', {"", {""}});
+    chksplit1("", ',', {"", {}});
+
+    chkrsplit1("a,b,,,  ", ',', {{"a,b,,"}, "  "});
+    chkrsplit1("a,b", ',', {{"a"}, "b"});
+    chkrsplit1("a,", ',', {{"a"}, ""});
+    chkrsplit1("a", ',', {{}, "a"});
+    chkrsplit1(",", ',', {{""}, ""});
+    chkrsplit1("", ',', {{}, ""});
 
     EQSTR (str(12345), "12345");
     EQUAL (atof(str(3.14159).c_str()), 3.14159);
@@ -196,14 +224,14 @@ int main(int, char **) {
     for (const auto& k: tests) {
         EQSTR(k.second, m[k.first]);
         auto p = m.find(k.first);
-        NOTEQUAL(p, m.end());
+        CHECK(p != m.end()); // NOTEQUAL requires printable  arguments
         EQUAL(strcasecmp(p->first.c_str(), k.first.c_str()), 0);
         EQSTR(p->second, k.second);
     }
     vector<string> failtests = {"", "abc", "zzz"};
     for (const auto& k : failtests) {
         auto q = m.find(k);
-        EQUAL(q, m.end());
+        CHECK(q == m.end()); // EQUAL requires printable arguments
     }
     EQUAL(cstr_encode(""), "");
     EQUAL(cstr_encode("x"), "x");
