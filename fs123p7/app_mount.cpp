@@ -68,6 +68,8 @@
 #include <array>
 #include <fstream>
 
+#include <pwd.h>
+#include <grp.h>
 #include <sys/stat.h>
 #include <cstddef>
 #include <sys/xattr.h>
@@ -184,6 +186,14 @@ struct attrcache_value_t{
 std::unique_ptr<expiring_cache<fuse_ino_t, attrcache_value_t, clk123_t>> attrcache;
 bool privileged_server;
 bool support_xattr;
+// Note that the 0-valued 'squash_ids' mean DO NOT SQUASH.  Thus, you
+// can't 'squash' everything to root.  If we ever find a good reason to
+// do that, we can revisit this, but it seems like a small-but-useful
+// bit of defensive programming for now.
+uid_t squash_all_uid = 0;
+gid_t squash_all_gid = 0;
+uid_t squash_root_uid = 0;
+gid_t squash_root_gid = 0;
 
 std::unique_ptr<addrinfo_cache> aicache;
 
@@ -239,6 +249,58 @@ bool idle_timeout_expired(){
         : false;
 }
 
+
+void parse_uidgid(const std::string& squash_s, uid_t* uidp, gid_t* gidp){
+    // Ugh... Too complicated:
+    //  If squash_s  is "~":
+    //      squash_uid = geteuid()
+    //      squash_gid = getegid()
+    //  else:
+    //      split squash_s into U:G # :G is optional
+    //      if U is a number:
+    //          squash_uid = that number
+    //      else
+    //          sqaush_uid = getpwnam(U)->pw_uid
+    //      if :G is present:
+    //          if G is a number:
+    //              squash_gid = that number
+    //          else
+    //              sqaush_gid = getgrnam(G)->gr->gid
+    //      else:
+    //          squash_gid = getpwuid(squash_uid)->pw_gid
+    if(squash_s.empty())
+        return;
+    else if(squash_s == "~"){
+        *uidp = sew::geteuid();
+        *gidp = sew::getegid();
+    }else{
+        auto [U, G] = split1(squash_s, ':');
+        // U is either uid or uname.
+        try{
+            *uidp = svto<uid_t>(U);
+        }catch(std::exception&){
+            // not an error!
+            struct passwd* pwd = getpwnam(U.c_str());
+            if(pwd == nullptr)
+                throw se(EINVAL, "parse_uidgid: " + U + " not found by getpwnam");
+            *uidp = pwd->pw_uid;
+            *gidp = pwd->pw_gid; // overwritten if G exists
+        }
+        if(G){
+            // *G is either gid or gname
+            try{
+                *gidp = svto<gid_t>(*G);
+            }catch(std::exception&){
+                // not an error!
+                struct group* gr = getgrnam(G->c_str());
+                if(gr == nullptr)
+                    throw se(EINVAL, "parse_uidgid: " + (*G) + " not found by getgrnam");
+                *gidp = gr->gr_gid;
+            }
+        }
+    }            
+}
+
 void massage_attributes(struct stat* sb, fuse_ino_t ino){
     sb->st_ino = ino & st_ino_mask;
     // Adjust permission bits to reflect our ability to actually read,
@@ -266,6 +328,16 @@ void massage_attributes(struct stat* sb, fuse_ino_t ino){
                 sb->st_mode &= ~(S_IXUSR|S_IXGRP|S_IXOTH);
         }
     }
+    if(squash_all_uid > 0){
+        sb->st_uid = squash_all_uid;
+    }
+    if(squash_all_gid > 0){
+        sb->st_gid = squash_all_gid;
+    }
+    if(sb->st_uid == 0 && squash_root_uid > 0)
+        sb->st_uid = squash_root_uid;
+    if(sb->st_gid == 0 && squash_root_gid > 0)
+        sb->st_gid = squash_root_gid;
 }
 
 fuse_ino_t genino(uint64_t estale_cookie, fuse_ino_t pino, const str_view name){
@@ -971,6 +1043,12 @@ void fs123_init(void *, struct fuse_conn_info *conn_info) try {
     st_ino_mask = ~fuse_ino_t(0);
     if( getenv("Fs123TruncateTo32BitIno") )
         st_ino_mask = 0xffffffff;
+
+    std::string squash_s = envto<std::string>("Fs123SquashAll", "");
+    parse_uidgid(squash_s, &squash_all_uid, &squash_all_gid);
+
+    squash_s = envto<std::string>("Fs123SquashRoot", "");
+    parse_uidgid(squash_s, &squash_root_uid, &squash_root_gid);
 
     // StaleIfError - the http backend puts this in cache-control headers.
     //  In addition, the diskcache backend uses it to determine when it's
@@ -2474,6 +2552,8 @@ try {
                                     "Fs123LinkCacheSize=",
                                     "Fs123StaleIfError=",
                                     "Fs123PrivilegedServer=",
+                                    "Fs123SquashAll=",
+                                    "Fs123SquashRoot=",
                                     "Fs123Sharedkeydir=",
                                     "Fs123SharedkeydirRefresh=",
                                     "Fs123EncodingKeyidFile=",
@@ -2729,8 +2809,8 @@ try {
 #endif
 
     // Unconditionally add some mount-options.  If we ever need to
-    // reverse these (unlikely), see the code in that handles subtype=
-    // in fuse_options_to_envvars in useful.c
+    // reverse these (unlikely), see the code that handles subtype= in
+    // fuse_options_to_envvars in fuseful.cpp
     fuse_opt_add_arg(&args, "-odefault_permissions");
     fuse_opt_add_arg(&args, "-oro");
     fuse_opt_add_arg(&args, "-onoatime");
