@@ -29,18 +29,6 @@ namespace{
     acfd the_sharedkeydir_fd;
     std::unique_ptr<sharedkeydir> the_sharedkeydir;
 
-    // For debugging and bug-hunting!  Sleep for a random time to give
-    // callers a chance to exercise timeout paths, expose data races,
-    // etc.
-    void random_sleep(double b){
-        if(b==0.)
-            return;
-        thread_local std::mt19937 g(std::hash<std::thread::id>()(std::this_thread::get_id()));
-        thread_local std::cauchy_distribution<> cd(0., b);  // cauchy is a very wide.  In fact, the mean is undefined/infinite.
-        double howlong = std::abs(cd(g));
-        DIAGf(_exportd_handler, "random_sleep for %f\n", howlong);
-        std::this_thread::sleep_for(std::chrono::duration<double>(howlong));
-    }
 } // namespace <anon>
 
 void exportd_handler::err_reply(fs123p7::req::up req, int eno){
@@ -63,7 +51,6 @@ void exportd_handler::err_reply(fs123p7::req::up req, int eno){
 // call reply_exception and return.  
 void
 exportd_handler::a(fs123p7::req::up req){
-    random_sleep(opts.debug_add_random_delay);
     auto full_path = opts.export_root + std::string(req->path_info);
     struct stat sb;
     if( ::lstat(full_path.c_str(), &sb) < 0 ){
@@ -83,7 +70,6 @@ exportd_handler::a(fs123p7::req::up req){
 
 void
 exportd_handler::d(fs123p7::req::up req, uint64_t inm64, bool begin, int64_t offset) {
-    random_sleep(opts.debug_add_random_delay);
     auto fname = opts.export_root + std::string(req->path_info);
     // use open+fdopendir so we can use O_NOFOLLOW for safety
     acfd xfd = open(fname.c_str(), O_DIRECTORY | O_NOFOLLOW | O_RDONLY);
@@ -126,7 +112,6 @@ exportd_handler::d(fs123p7::req::up req, uint64_t inm64, bool begin, int64_t off
 
 void
 exportd_handler::f(fs123p7::req::up req, uint64_t inm64, size_t len, uint64_t offset, void *buf) try {
-    random_sleep(opts.debug_add_random_delay);
     auto fname = opts.export_root + std::string(req->path_info);
     acfd fd = ::open(fname.c_str(), O_RDONLY | O_NOFOLLOW);
     if( !fd ){
@@ -158,7 +143,6 @@ exportd_handler::f(fs123p7::req::up req, uint64_t inm64, size_t len, uint64_t of
 
 void
 exportd_handler::l(fs123p7::req::up req) try {
-    random_sleep(opts.debug_add_random_delay);
     auto fname = opts.export_root + std::string(req->path_info);
     auto pi = req->path_info;
     l_reply(std::move(req), sew::str_readlink(fname.c_str()), cache_control(0, pi, nullptr));
@@ -172,7 +156,6 @@ exportd_handler::l(fs123p7::req::up req) try {
 
 void
 exportd_handler::s(fs123p7::req::up req){
-    random_sleep(opts.debug_add_random_delay);
     struct statvfs svb;
     sew::statvfs(opts.export_root.c_str(), &svb);
     // The cache-control for stat isn't path-specific, so it isn't appropriate
@@ -183,13 +166,11 @@ exportd_handler::s(fs123p7::req::up req){
 
 void
 exportd_handler::n(fs123p7::req::up req){
-    random_sleep(opts.debug_add_random_delay);
     n_reply(std::move(req), "exportd_handlers: 0\n", "max-age=1,stale-while-revalidate=1");
 }
 
 void
 exportd_handler::x(fs123p7::req::up req, size_t len, std::string name){
-    random_sleep(opts.debug_add_random_delay);
     std::string fname = opts.export_root + std::string(req->path_info);
     ssize_t sz;
     std::string buf(len, '\0');

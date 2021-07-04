@@ -24,6 +24,19 @@ static constexpr uint64_t validator = 12345;
 static constexpr uint64_t estale_cookie = 54321;
 static constexpr uint64_t etag = 31415;
 
+// For debugging and bug-hunting!  Sleep for a random time to give
+// callers a chance to exercise timeout paths, expose data races,
+// etc.
+void random_sleep(double b){
+    if(b==0.)
+        return;
+    thread_local std::mt19937 g(std::hash<std::thread::id>()(std::this_thread::get_id()));
+    thread_local std::cauchy_distribution<> cd(0., b);  // cauchy is a very wide.  In fact, the mean is undefined/infinite.
+    double howlong = std::abs(cd(g));
+    DIAGf(_testserver, "random_sleep for %f\n", howlong);
+    std::this_thread::sleep_for(std::chrono::duration<double>(howlong));
+}
+
 // These shouldn't be global.  Can't we find a way to push them into the
 // server library?  If not, then maybe into the bench_handler?
 acfd sharedkeydir_fd;

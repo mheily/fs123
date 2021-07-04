@@ -84,8 +84,8 @@ struct exportd_options{
         ADD_OPTION(double, log_max_hourly_rate, 3600., "limit log records to approximately this many per hour."); \
         ADD_OPTION(double, log_rate_window, 3600., "estimate log record rate with an exponentially decaying window of this many seconds."); \
         /* options for debug/development/testing only */                \
-        ADD_OPTION(bool, argcheck, false, "Parse arguments and construct the server, but don't run it."); \
-        ADD_OPTION(double, debug_add_random_delay, 0., "DEVEL/DEBUG ONLY.  NOT FOR PRODUCTION - A non-zero value will introduce random delays in every callback.  Potentially useful for exposing bugs related to threading, timeouts, etc.  The value is used as the 'b' parameter of a Cauchy distribution for the delay in seconds.");
+        ADD_OPTION(bool, argcheck, false, "Parse arguments and construct the server, but don't run it.");
+
 
 #define ADD_OPTION(TYPE, NAME, DEFAULT, DESC) TYPE NAME = DEFAULT
 #define ADD_STD_OPTIONAL(TYPE, NAME, DESC) std::optional<TYPE> NAME;
