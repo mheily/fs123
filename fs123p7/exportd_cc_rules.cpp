@@ -147,6 +147,105 @@ cc_rule_cache::get_cc(const std::string& path_info, bool directory)try{
     std::throw_with_nested(std::runtime_error("in get_cc("  + path_info + ") with re.code(): " + std::to_string(re.code())));
  }
 
+/*static*/ std::string
+cc_rule_cache::bounded_max_age(const std::string& cc, const struct stat& sb){
+    // If the object was recently changed (i.e., sb.mtime is in the
+    // recent past), then there's a good chance it might change again
+    // in the near future.  So adjust the specified max-age down
+    // to roughly the time-since-last change.  Under no circumstances
+    // (crazy value in sb.st_mtime, crazy value returned by time(2))
+    // adjust it below 1 second (but if it started below 1 second,
+    // that's fine).
+    //
+    // FIXME: It's unfortunate that modifying the cc requires
+    // carefully teasing apart and then reassembling a std::string.
+    // It would be much better if the cc-rules parser gave us
+    // numerical values for things like max-age,
+    // stale-while-revalidate, etc. and we did the final assembly
+    // here.  But that would require a new, externally visible, format
+    // for the cc_rules files, which is a project for another day.
+    time_t maxage;
+    size_t digits_begin;
+    size_t digits_end;
+    DIAG(_cc_rules, "adjust_cc(" + cc + ")");
+#if 1
+    // regex - the easy way
+    static std::regex re("(?:^|,| )max-age\\s*=\\s*(\\d+)");
+    std::smatch m;
+    if(!std::regex_search(cc, m, re))
+        return cc;
+    digits_begin = m.position(1);
+    digits_end = digits_begin + m.length(1);
+    try{
+        (void)scanint<time_t, 10, true>(cc, &maxage, digits_begin);
+    }catch(std::exception& e){
+        // e.g., max-age=99999999999999999999999 would cause scanint to throw
+        complain(LOG_WARNING, e, str("adjust_cc: scanint threw.  set maxage=numeric_limits::max(): cc:", cc, "digits_begin:", digits_begin));
+        maxage = std::numeric_limits<time_t>::max();
+    }
+#else
+    // We can do it without regex, but it's a lot more complicated, a
+    // little less robust, and (maybe) slightly faster (a few tenths
+    // of a microsecond).  It's hard to believe that could matter:
+    // we've already handled an http request, done a stat and/or a
+    // read, etc.  Simpler is better (until we encounter a case where
+    // performance actually matters).
+    //
+    // Also note - whitespace is handled slightly differently from the
+    // regex code.  The existing unit tests will fail, but that's
+    // because the tests are too strict about whitespace.
+    size_t start = 0;
+    for(;;){ // loop over spurious "hits",  e.g., s-max-age=99
+        auto ma_begin = cc.find("max-age", start);
+        if(ma_begin == std::string::npos)
+            return cc; // if there's *nothing* matching max-age, we're done
+        auto ma_end = ma_begin + sizeof("max-age")-1;
+        if(ma_begin > 0){
+            // check the character before "max-age"
+            auto prev = cc[ma_begin-1];
+            if(prev != ' ' && prev != ','){
+                start = ma_end;
+                continue;
+            }
+        }
+        auto equals = svscan(cc, nullptr, ma_end); // skip whitespace
+        if(cc[equals] != '='){ // might dereference the terminal '\0'!
+            start = equals;
+            continue;
+        }
+        digits_begin = equals+1;
+        try{
+            digits_end = scanint<time_t, 10, true>(cc, &maxage, digits_begin);
+            // unlike the regex code, return cc if we see:
+            // "max-age=-10"
+            if(maxage < 0)
+                return cc;
+        }catch(std::exception&){
+            // unlike the regex code, return cc if we see:
+            // "max-age=<EOL>" or "max-age=foo" or
+            // "max-age=99999999999999999999".  The latter is arguably
+            // a bug, but it's pretty ill-advised.  I.e., I wouldn't
+            // count on proxy-caches handling it correctly either.
+            return cc;
+        }
+        break;
+    }
+#endif
+
+    // finally - we've got 'maxage', digits_begin and digits_end, so
+    // we can reconstruct the cc string around a new value (if
+    // needed).
+    auto unchanged = sew::time(nullptr) - sb.st_mtime;
+    auto maxmaxage = std::max(time_t(1), unchanged); 
+    auto adjusted_age = std::min(maxmaxage, maxage);
+    if(adjusted_age != maxage){
+        return cc.substr(0, digits_begin) +
+            str(adjusted_age) +
+            cc.substr(digits_end);
+    }
+    return cc;
+}
+
 std::ostream&
 cc_rule_cache::report_stats(std::ostream& os){
     os << stats;

@@ -171,10 +171,12 @@ cat > $etc/fs123p7exportd.gflags <<- EOF
 --diag_names=fs123server:http:bufev:proc:fs123req:secretbox:cc_rules:err:complaints:exportd_handler
 #--libevent_debug=true
 --diag_destination=$diag_file
-# To turn off encryption, comment out the next two lines and uncomment --allow_unencrypted_requests:
+# To turn off encryption, comment out the next two lines and uncomment --accept_plaintext_requests:
 --sharedkeydir=$RCroot/secrets.d
 --sharedkeydir_refresh=1
-#--allow_unencrypted_requests=true
+# Note that we have to accept-plaintext-requests for our
+# unit test of cache-control rules (t-14ccrules) to work
+--accept_plaintext_requests=true
 --no_rules_cc=max-age=3, stale-while-revalidate=3
 EOF
 
@@ -302,7 +304,7 @@ done
 # pick.
 tests=$(ls -t $testdir/t-*[a-zA-Z0-9])
 # For example, to run in a particular order:
-#tests=$(sed "s@ @ $testdir/@g" <<< " t-14ccrules t-15cornercases t-16logrotate t-17sigusr2 t-01simple t-02disconnected t-03readdir t-04changingcrf t-05unittests t-06xattr t-07modified t-08estale t-09w2r t-10lsroot t-11showcache t-12swrcache")
+#tests=$(sed "s@ @ $testdir/@g" <<< " t-14ccrules t-15cornercases t-16logrotate t-17sigusr2 t-01simple t-02disconnected t-03readdir t-05unittests t-06xattr t-07modified t-08estale t-09w2r t-10lsroot t-11showcache t-12swrcache")
 #garden prepend-path PATH $MTroot/sbin
 
 PATH=$MTroot/sbin:$PATH

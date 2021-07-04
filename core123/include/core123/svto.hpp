@@ -43,6 +43,8 @@
 // characters that represent a value of type T then assign the
 // represented value to *p and return the offset in the original sv of
 // the character following the last one used to represent the value.
+// Note that svscan might return sv.size(), but it never returns
+// sv.npos.
 //
 // If T is a floating point type, then the extraction is done
 // with strtof, strtod or strtold, which "do the right thing" with

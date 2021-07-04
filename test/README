@@ -16,5 +16,4 @@ have been set (all of which are stored in c/runenv):
 
 EXPORT_ROOT
 MTPT
-SERVPORT
 

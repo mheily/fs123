@@ -13,6 +13,7 @@ struct cc_rule_cache{
                   int _default_ttl, const std::string& fallback_cc);
     std::string get_cc(const std::string& path_info, bool known_directory);
     std::ostream& report_stats(std::ostream& os);
+    static std::string bounded_max_age(const std::string& cc, const struct stat& sb);
 private:
     struct rerule{
         std::regex re;

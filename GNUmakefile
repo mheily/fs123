@@ -34,7 +34,7 @@ endif
 unit_tests=ut_diskcache
 unit_tests += ut_seektelldir
 unit_tests += ut_content_codec
-unit_tests += utx_cc_rules
+unit_tests += ut_cc_rules
 unit_tests += ut_inomap
 
 # other_exe
@@ -115,6 +115,7 @@ fs123p7 : $(fs123p7_objs)
 # link ut_diskcache links with some client-side .o files
 ut_diskcache : diskcache.o backend123.o 
 ut_inomap : inomap.o
+ut_cc_rules : exportd_cc_rules.o
 
 backend123_http.o : CPPFLAGS += $(shell curl-config --cflags)
 #</fs123p7>

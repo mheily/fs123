@@ -20,9 +20,9 @@
 
 using namespace core123;
 
-auto _exportd_handler = diag_name("exportd_handler");
-
 namespace{
+    auto _exportd_handler = diag_name("exportd_handler");
+
     // The sharedkeydir (i.e., the secret manager) is a singleton because
     // we have to open the file descriptor *before* we call chroot.
     // See exportd_global_setup.
@@ -292,7 +292,10 @@ exportd_handler::cache_control(int eno, str_view path, const struct stat* sb){
     // gets called with sb==nullptr for /l, /n, etc.  But
     // none of those are directories, so:
     bool isdir = sb && S_ISDIR(sb->st_mode);
-    return rule_cache->get_cc(std::string(path), isdir); 
+    std::string cc = rule_cache->get_cc(std::string(path), isdir);
+    if(sb && opts.bounded_max_age)
+        return cc_rule_cache::bounded_max_age(cc, *sb);
+    return cc;
 }
 
 static uint64_t

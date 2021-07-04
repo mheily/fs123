@@ -1,0 +1,146 @@
+#!/bin/bash
+
+# Test the --decentralized-cache-control rules
+#
+# Assume that the server was started with:
+#
+# --default-rules-maxage=90
+# --bounded-max-age=true
+# --accept-plaintext-requests
+#
+# Note that all these are defaults.
+#
+
+die(){
+    1>&2 echo "$@"
+    exit 1
+}
+trap 'echo 1>&2 $0: Exiting on ERR trap, line: $LINENO; exit 1' ERR
+
+gflagsfile=$RCroot/etc/fs123p7exportd/fs123p7exportd.gflags
+if ! grep -q -- ^--accept.plaintext.requests "$gflagsfile" ; then
+    echo This test can only run if the server is configured with --accept-plaintext-requests.  It is not.  Bye.
+    exit 0
+fi
+
+if ! grep -q -- ^--no.rules.cc= "$gflagsfile" ; then
+    no_rules_cc=max-age=120,stale-while-revalidate=120,stale-if-error=10000000 # default?
+else
+    no_rules_cc=$(sed -n -e /^--no.rules.cc=/s/--no_rules_cc=//p "$gflagsfile" | tr -d '[:space:]')
+fi
+
+me=$(basename $0)
+
+# Let's make sure that ls works too...
+d=$(cd $EXPORT_ROOT && mktemp -d -p. $me.XXXXXX | sed 's@^./@@')
+chmod a+rx $EXPORT_ROOT/$d
+(cd $EXPORT_ROOT/$d; touch a.dms)
+
+getcc(){
+    curl -H Accept-encoding:fs123-secretbox -si "$1" | awk 'tolower($0) ~ /cache-control:/ { $1=""; print; }' | tr -d '[:space:]'
+}
+
+getstatus(){
+    curl -H Accept-encoding:fs123-secretbox -si "$1" | awk '/HTTP/{print $2}'
+}
+
+# Use curl to get the cache-control headers rather than trying to reverse-engineer
+# them from client-side behavior.
+
+# Our cc-rules files have non-standard cache-control headers that
+# contain identifiable "cookies".  They're not meaningful to proxies,
+# but we're not using proxies, and they shouldn't do any harm.
+
+create_ccfile()(
+    tag=$1
+    cd $EXPORT_ROOT
+    mkdir -p $tag 2>/dev/null || :
+    cat > $tag/.fs123_cc_rules <<EOF
+   {
+    "rulesfile-maxage": 2,
+    "re-rules": [
+       { "re": ".*\\\\.stk"  ,  "cc": "$tag,re-stk"},
+       { "re": ".*\\\\.ark"  ,  "cc": "$tag,re-ark"}
+     ],
+    "cc": "$tag,nomatch"
+   }
+EOF
+    )
+
+set -x
+
+create_ccfile $d
+create_ccfile $d/a/b
+
+: ${SERVPORT:=$(cat $RCroot/portfile)}
+baseurl=http://localhost:$SERVPORT/fs123/7/2
+
+[ "$(getcc $baseurl/a/$d)" = "$d,nomatch" ]
+[ "$(getcc $baseurl/a/$d/a/b/c)" = "$d/a/b,nomatch" ]
+[ "$(getcc $baseurl/a/$d/a/b/c.ark)" = "$d/a/b,re-ark" ]
+[ "$(getcc $baseurl/a/$d/a/b/c.ark/d)" = "$d/a/b,nomatch" ]
+# Tweak a/b/.fs123_cc_rules so it violates the schema
+# and try again.  We should still "see" the rules file
+# at $d/.fs123_cc_rules:
+sed -i.bak s/cc/dd/ $EXPORT_ROOT/$d/a/b/.fs123_cc_rules
+sleep 2
+[ $(getstatus "$baseurl/a/$d/a/b/c.ark") == 200 ]
+[ $(getstatus "$baseurl/a/$d/a/b/c.ark/d") == 200 ]
+[ "$(getcc $baseurl/a/$d/a/b/c.ark)" = "$d,re-ark" ]
+[ "$(getcc $baseurl/a/$d/a/b/c.ark/d)" = "$d,nomatch" ]
+# Tweak it again so it isn't even valid json
+sed -i.bak s/,/,,/ $EXPORT_ROOT/$d/a/b/.fs123_cc_rules
+sleep 2
+[ "$(getcc $baseurl/a/$d/a/b/c.ark)" = "$d,re-ark" ]
+[ "$(getcc $baseurl/a/$d/a/b/c.ark/d)" = "$d,nomatch" ]
+
+rm $EXPORT_ROOT/$d/.fs123_cc_rules
+[ "$(getcc $baseurl/a/$d)" = "$d,nomatch" ]
+sleep 3
+[ "$(getcc $baseurl/a/$d)" = $no_rules_cc ]
+
+# Test the --bounded-max-age behavior.
+# Create a new directory (.../maxage.d)
+# with a new file: newfile, and a .fs123_cc_rules file.
+mkdir $EXPORT_ROOT/$d/maxage.d
+cat > $EXPORT_ROOT/$d/maxage.d/.fs123_cc_rules <<EOF
+   {
+    "rulesfile-maxage": 2,
+    "cc": "public,max-age=10, stale-while-revalidate=30, stale-while-error=300"
+   }
+EOF
+# The max-age from the rules-file is 10, so the max-age in the
+# header  should ramp up to 10 in 10 seconds and then saturate.
+touch $EXPORT_ROOT/$d/maxage.d/newfile
+for i in $(seq 15); do
+    sleep 1
+    cc=$(getcc $baseurl/a/$d/maxage.d/newfile)
+    if [ $i -lt 10 ]; then
+        # expect to see either max-age=$i or max-age=$((i+1)) in cc.
+        grep -q max-age=$i <<< $cc || grep -q max-age=$((i+1)) <<< $cc
+    else
+        # expect to see max-age=10 in cc
+        grep -q max-age=10 <<< $cc
+    fi
+done
+# Touch it again, expect the same.
+touch $EXPORT_ROOT/$d/maxage.d/newfile
+for i in $(seq 15); do
+    sleep 1
+    cc=$(getcc $baseurl/a/$d/maxage.d/newfile)
+    if [ $i -lt 10 ]; then
+        # expect to see either max-age=$i or max-age=$((i+1)) in cc.
+        grep -q max-age=$i <<< $cc || grep -q max-age=$((i+1)) <<< $cc
+    else
+        # expect to see max-age=10 in cc
+        grep -q max-age=10 <<< $cc
+    fi
+done
+# Change ctime but not mtime (add a hard link)
+ln $EXPORT_ROOT/$d/maxage.d/newfile $EXPORT_ROOT/$d/maxage.d/hardlink
+for i in $(seq 5); do
+    sleep 1
+    cc=$(getcc $baseurl/a/$d/maxage.d/newfile)
+    # expect to see max-age=10 in cc
+    grep -q max-age=10 <<< $cc
+done

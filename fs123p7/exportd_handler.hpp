@@ -66,6 +66,7 @@ struct exportd_options{
         ADD_OPTION(std::string, no_rules_cc, "max-age=120,stale-while-revalidate=120,stale-if-error=10000000", "cache-control header used when no .fs123_cc_rules file is found.  This can be very long to encourage caching of (practically) immutable filesystems."); \
         ADD_OPTION(std::string, generic_error_cc, "max-age=30,stale-while-revalidate=30,stale-if-error=1000000", \
                    "cache-control header used when an error *other than ENOENT* is encountered.  It's not uncommon for such errors to be the result of server-side mis-configuration, so a long timeout is undesirable because it would lock in the error"); \
+        ADD_OPTION(bool, bounded_max_age, true, "max-age is never more than now()-st_mtime"); \
         ADD_OPTION(size_t, rc_size, 10000, "size of rules-cache");      \
         /* options related to shared secrets and fs123-secretbox */ \
         ADD_STD_OPTIONAL(std::string, sharedkeydir, "path to directory containing shared secrets (pre-chroot!)"); \
