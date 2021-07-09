@@ -58,8 +58,8 @@ core123-check:
 
 OPT?=-O3 # if not explicitly set
 DASHG?=-ggdb
-CPPFLAGS += -iquote $(top/)include
-CPPFLAGS += -I $(top/)core123/include
+CPPFLAGS := -iquote $(top/)include $(CPPFLAGS)
+CPPFLAGS := -I $(top/)core123/include $(CPPFLAGS)
 CXXFLAGS += -DFUSE_USE_VERSION=26
 CXXFLAGS += -std=c++17 -Wall
 CXXFLAGS += -Wshadow
