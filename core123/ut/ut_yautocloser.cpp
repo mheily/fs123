@@ -16,10 +16,6 @@ using core123::default_close_err_handler;
 // Minimal exercising of xopen, xunlink and (automatic) xclose (via xfd_t).
 // 
 
-ac::fd_t<> openfile(const char *name, int flags, mode_t mode=0){
-    return open(name, flags, mode);
-}
-
 void dosomething(){
     const char *name = "ut_wrapper.tmp";
     try{
@@ -32,8 +28,8 @@ void dosomething(){
     char bufin[1024];
     const char *buf = "The quick brown fox jumped over the lazy dog";
     {
-        auto xfdw = openfile(name, O_WRONLY|O_CREAT, 0777);
-        auto xfdr = openfile(name, O_RDONLY);
+        ac::fd_t<> xfdw = sew::open(name, O_WRONLY|O_CREAT, 0777);
+        ac::fd_t<> xfdr = sew::open(name, O_RDONLY);
         // Save the file descriptors for later.  This is *NOT*
         // recommended usage.  We're doing this so that we can
         // check that they were really closed!

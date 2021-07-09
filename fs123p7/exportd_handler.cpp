@@ -99,11 +99,7 @@ exportd_handler::d(fs123p7::req::up req, uint64_t inm64, bool begin, int64_t off
             complain(e, "export_handler::d(): error obtaining esc for: "+fname + "/" + de->d_name  + ".  Setting entry esc to 0");
             entry_esc = 0;
         }
-#ifndef __APPLE__
         if(!req->add_dirent(*de, entry_esc))
-#else
-	if(!req->add_dirent(*de, entry_esc, sew::telldir(dir)))
-#endif
             break;
     }
     bool at_eof = !de;

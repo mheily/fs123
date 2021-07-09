@@ -1062,15 +1062,13 @@ bool req::add_dirent(core123::str_view name, long offset, int type, uint64_t est
     return true;
 }
 
-#ifndef __APPLE__
 bool req::add_dirent(const ::dirent& de, uint64_t estale_cookie){
+#ifndef __APPLE__    
     return add_dirent(de.d_name, de.d_off, de.d_type, estale_cookie);
-}
 #else
-bool req::add_dirent(const ::dirent& de, uint64_t estale_cookie, long d_off){
-    return add_dirent(de.d_name, d_off, de.d_type, estale_cookie);
+    return add_dirent(de.d_name, de.d_seekoff, de.d_type, estale_cookie);
+#endif    
 }
-#endif
 
 void req::add_header(const std::string& name, const std::string& value){
     if(function != "p")

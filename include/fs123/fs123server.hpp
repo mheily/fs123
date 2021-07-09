@@ -329,11 +329,7 @@ struct req{
 
     // Methods that may only be called from within a d() handler:
     bool add_dirent(core123::str_view name, long offset, int type, uint64_t esc);
-#ifndef __APPLE__
     bool add_dirent(const ::dirent& de, uint64_t esc);
-#else
-    bool add_dirent(const ::dirent& de, uint64_t esc, long d_off);
-#endif
     // Method that may only be called from within a p() handler:
     void add_header(const std::string& name, const std::string& value);
 
