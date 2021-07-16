@@ -5,7 +5,10 @@ ut_*
 *.d
 testconfigparser
 ex1server
+# files called fs123p7
 fs123p7
+# But not the top-level directory called fs123p7
+!/fs123p7
 libfs123.a
 obj/
 obj-*/
