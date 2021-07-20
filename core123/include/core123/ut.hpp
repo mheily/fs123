@@ -14,6 +14,7 @@ static unsigned utfail = 0, utpass = 0;
 #define EQUAL(x, y) if ((x) != (y)) { utfail++; std::cerr << __LINE__ << ": FAILED " #x " " << core123::ins(x) << " != " #y " " << core123::ins(y) << std::endl; } else {utpass++; DIAG(_ut, "PASSED " #x " " << core123::ins(x) << " == " #y " " << core123::ins(y));}
 #define NOTEQUAL(x, y) if ((x) == (y)) { utfail++; std::cerr << __LINE__ << ": FAILED " #x " line " << __LINE__ << core123::ins(x) << " != " #y " " << core123::ins(y) << std::endl; } else {utpass++; DIAG(_ut, "PASSED " #x " " << core123::ins(x) << " == " #y " " << core123::ins(y));}
 #define CHECK(expr) if(expr) { utpass++; DIAG(_ut, "PASSED " #expr " is true");} else {utfail++; std::cerr << __LINE__ << ": FAILED " << #expr << " is false\n";}
+#define THROWS(code, extype) do{ try{ code; CHECK(#code "should have thrown" && 0); } catch(extype&){ CHECK("threw as expected"); }}while(0)
 
 #define EQSTR(x, y) _EQSTR(x, y, #x)
 inline void _EQSTR(const std::string& x, const std::string& y, const char *xexpr){

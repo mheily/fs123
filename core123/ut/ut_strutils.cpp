@@ -14,6 +14,7 @@ using core123::tohex;
 using core123::quopri;
 using core123::cstr_encode;
 using core123::urlescape;
+using core123::urlunescape;
 using core123::hexdump;
 using core123::svsplit_exact;
 using core123::svsplit_any;
@@ -61,6 +62,11 @@ void chkrsplit1(const std::string& in, char delim, std::pair<std::optional<std::
     auto ret = rsplit1(in, delim);
     EQUAL(ret.first, expected.first);
     EQUAL(ret.second, expected.second);
+}
+
+void chkurlescape(const std::string& escaped, const std::string& expected){
+    EQSTR(urlescape(escaped), expected);
+    EQSTR(urlunescape(expected), escaped);
 }
 
 int main(int, char **) {
@@ -178,18 +184,22 @@ int main(int, char **) {
     EQSTR (quopri("he"), "he");
     EQSTR (quopri("\001\002Hell0\177"), "=01=02Hell0=7F");
 
-    EQSTR (urlescape(""), "");
-    EQSTR (urlescape(" "), "%20");
-    EQSTR (urlescape("a"), "a");
-    EQSTR(urlescape("abc"), "abc" );
-    EQSTR(urlescape("abc?def"), "abc%3Fdef");
-    EQSTR(urlescape("%%"), "%25%25");
-    EQSTR(urlescape("\xff"), "%FF");
-    EQSTR(urlescape("abc\xea""def"), "abc%EAdef");  // N.B.  "\xeadef" looks like a 5-hex-digit escape
-    EQSTR(urlescape("\x3f\x2f\x19\xc3\xf0"), "%3F/%19%C3%F0");  // N.B.  0x2f == '/'
-    EQSTR (urlescape("hello"), "hello");
-    EQSTR (urlescape("\001\002H~e.l/l-0_\177"), "%01%02H~e.l/l-0_%7F");
+    chkurlescape((""), "");
+    chkurlescape((" "), "%20");
+    chkurlescape(("a"), "a");
+    chkurlescape(("abc"), "abc" );
+    chkurlescape(("abc?def"), "abc%3Fdef");
+    chkurlescape(("%%"), "%25%25");
+    chkurlescape(("\xff"), "%FF");
+    chkurlescape(("abc\xea""def"), "abc%EAdef");  // N.B.  "\xeadef" looks like a 5-hex-digit escape
+    chkurlescape(("\x3f\x2f\x19\xc3\xf0"), "%3F/%19%C3%F0");  // N.B.  0x2f == '/'
+    chkurlescape(("hello"), "hello");
+    chkurlescape(("\001\002H~e.l/l-0_\177"), "%01%02H~e.l/l-0_%7F");
 
+    THROWS(urlunescape("abc%"), std::invalid_argument);
+    THROWS(urlunescape("abc%0"), std::invalid_argument);
+    THROWS(urlunescape("abd%GHdef"), std::invalid_argument);
+    THROWS(urlunescape("abd%0xdef"), std::invalid_argument);
 
     EQSTR (hexdump(" "), "   ");
     EQSTR (hexdump(" ", true), " 20");

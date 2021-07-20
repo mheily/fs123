@@ -124,6 +124,34 @@ inline std::string urlescape(str_view in){
     return ret;
 }
 
+inline std::string urlunescape(str_view in){
+    std::string ret;
+    ret.reserve(in.size());
+    for(size_t i=0; i<in.size(); ++i){
+        char c = in[i];
+        if(c == '%'){
+            if(i+2 >= in.size())
+                throw std::invalid_argument("urlunescape: end-of-string in middle of %-escape");
+            c = 0;
+            // see _digitcvt in scanint
+            for(char x : {in[i+1], in[i+2]}){
+                c *= 16;
+                if(x >= '0' && x <= '9')
+                    c += x-'0';
+                else if (x>= 'a' && x <= 'f')
+                    c += 10 + x - 'a';
+                else if(x >= 'A' && x <= 'F')
+                    c += 10 + x - 'A';
+                else
+                    throw std::invalid_argument("urlunescape:  non-hex digit in %-escape");
+            }
+            i += 2;
+        }
+        ret.push_back(c);
+    }
+    return ret;
+}
+
 template <typename T> inline std::string tohex(T u, bool zeropad = true)
 {
     static unsigned char hexchars[16] = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f' };
