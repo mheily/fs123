@@ -274,7 +274,7 @@ bool distrib_cache_message::recv(int fd){
     // check the scope.
     str_view msg_scope = rpop();
     if(msg_scope != dbe.scope){
-        complain(LOG_WARNING, "distrib_cache_message::recv: unexpected scope.  Is somebody on our multicast channel?");
+        complain(LOG_NOTICE, "distrib_cache_message::recv: unexpected scope: " + string(msg_scope) + ".  Are we sharing the multicast channel with clients using a different scope/baseurl?");
         return false;
     }
 
