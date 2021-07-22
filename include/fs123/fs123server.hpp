@@ -400,6 +400,14 @@ private:
         allocate_pbuf(s.size());
         buf = buf.append(s);
     }
+    // How much space is "available" at the 'front' and 'back' of buffer - NOT counting
+    // the space we pre-allocated for the secretbox leader and padding
+    size_t buf_avail_back() const {
+        return buf.avail_back() - secretbox_padding;
+    }
+    size_t buf_avail_front() const {
+        return buf.avail_front() - secretbox_leadersz;
+    }
     void internal_exception(const std::exception& e);
     // The reply methods are private.  There are friend versions that take
     // a up 'this' argument that are public.

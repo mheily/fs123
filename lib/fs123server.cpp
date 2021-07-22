@@ -623,7 +623,7 @@ req::parse_and_handle(req::up req) try {
         // Len and offset are unsigned kibibytes.
         uint64_t lenkib, offsetkib;
         svscan(req->query, std::tie(lenkib, offsetkib)); // N.B.  permissive about separator.  Does not insist on semi-colon
-        static size_t validator_space = 32; // room for a netstring(to_string(uint64_t));y
+        static size_t validator_space = 32; // room for a netstring(to_string(uint64_t));
         auto requested_len = lenkib*1024;
         req->requested_len = requested_len;
         req->allocate_pbuf(req->requested_len + validator_space);
@@ -1055,7 +1055,7 @@ bool req::add_dirent(core123::str_view name, long offset, int type, uint64_t est
     std::ostringstream oss;
     oss << core123::netstring(name) << " " << type << " " << estale_cookie << "\n";
     size_t osslen = core123::ostream_size(oss);
-    if(osslen > buf.avail_back())
+    if(osslen > buf_avail_back())
         return false;
     buf = buf.append(oss.str());
     dir_lastoff = offset;
@@ -1115,8 +1115,8 @@ void req::f_reply(size_t nread, uint64_t content_validator, uint64_t etag64, uin
             httpthrow(500, "f_reply called with nread > requested number of bytes");
         
         buf = buf.grow_back(nread);
-        DIAGf(_fs123server, "prepend content validator (%llu) to buf.  buf.avail_front() = %zd, buf.avail_back()=%zd",
-              (unsigned long long)content_validator, buf.avail_front(), buf.avail_back());
+        DIAGf(_fs123server, "prepend content validator (%llu) to buf.  buf_avail_front() = %zd, buf_avail_back()=%zd",
+              (unsigned long long)content_validator, buf_avail_front(), buf_avail_back());
         buf = buf.prepend(core123::netstring(std::to_string(content_validator)));
 
         add_hdr(ohdrs, HHCOOKIE, std::to_string(esc));
