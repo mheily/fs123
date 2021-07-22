@@ -103,6 +103,8 @@ main(int, char **) {
         cout << "a=" << a << " b=" << b << " start=" << start << "\n";
         Assert(a==1);
         Assert(b==2);
+        Assert(start == 3);
+
         // Let's make sure that if we try to svscan past the end of
         // the input, we get an error.
         bool caught = false;
@@ -114,6 +116,10 @@ main(int, char **) {
             caught = true;
         }
         Assert(caught);
+
+        // svscan into an empty tuple.
+        start = svscan(in, std::tie(), 0);
+        Assert(start == 0);
     }
 
     // check that svto is ok with CRLF (whitespace) following a conversion.

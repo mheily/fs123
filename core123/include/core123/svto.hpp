@@ -210,9 +210,10 @@ size_t svscan(str_view sv, IITER b, IITER e, size_t start = 0){
 // 
 template <class Tuple, std::size_t ... Is>
 size_t svscan_tuple(str_view sv, const Tuple& t, size_t start, std::index_sequence<Is...>){
+    unused(sv);   // gcc -Wunused-but-set-parameter when Tuple is empty
     // expand pack over the binary comma expression
     ((start = svscan(sv, &std::get<Is>(t), start)+1), ... );
-    return start;
+    return start - (std::tuple_size<Tuple>::value!=0);
 }
 
 template <typename ... Types>
