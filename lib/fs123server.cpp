@@ -614,7 +614,9 @@ req::parse_and_handle(req::up req) try {
         uint64_t lenkib;
         int64_t offset;
         int begin;
-        svscan(req->query, std::tie(lenkib, begin, offset), 0); // N.B.  permissive about separator.  Does not insist on semi-colon
+        auto from = svscan(req->query, &lenkib);
+        from = svscan(req->query, &begin, from+1); // +1 skip semicolon (or other separator)
+        svscan(req->query, &offset, from+1);       // +1 skip semicolon (or other separator)
         req->allocate_pbuf(lenkib*1024);
         handler.d(std::move(req), inm64, !!begin, offset);
     }else if(req->function == "f"){
@@ -622,7 +624,8 @@ req::parse_and_handle(req::up req) try {
         // The query is Len;Offset
         // Len and offset are unsigned kibibytes.
         uint64_t lenkib, offsetkib;
-        svscan(req->query, std::tie(lenkib, offsetkib)); // N.B.  permissive about separator.  Does not insist on semi-colon
+        auto from = svscan(req->query, &lenkib); 
+        svscan(req->query, &offsetkib, from+1);  // +1 skip semicolon (or other separator)
         static size_t validator_space = 32; // room for a netstring(to_string(uint64_t));
         auto requested_len = lenkib*1024;
         req->requested_len = requested_len;

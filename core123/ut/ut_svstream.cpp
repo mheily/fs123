@@ -19,6 +19,16 @@ int main(int, char **){
     Assert( ten == 10 );
     Assert( w == "hello" );
     Assert( isvs );
+    Assert( isvs.tellg() == 8 );
+    isvs >> w;
+    Assert( w == "world");
+    Assert( isvs );
+    Assert( isvs.eof() );
+    // calling tellg() at EOF sets failbit and returns -1.  (This is a feature of
+    // iostreams, NOT particular to svstream!)
+    Assert( isvs.tellg() == std::ios::pos_type(-1) );
+    Assert( isvs.fail() );
+    isvs.clear();
 
     core123::str_view s = "11 goodbye world";
     isvs.sv(s);

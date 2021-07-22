@@ -120,6 +120,22 @@ main(int, char **) {
         // svscan into an empty tuple.
         start = svscan(in, std::tie(), 0);
         Assert(start == 0);
+
+        int i, i2; std::string s1, s2; float f;
+        start = svscan("hello world", tie(s1, s2));
+        Assert(s1 == "hello");
+        Assert(s2 == "world");
+        Assert(start == 11);
+
+        // scan into a 'delimiter' character to skip *single* punctuation.
+        char comma;
+        start = svscan("bc 3.14,12,5", std::tie(s1, f, comma, i, comma, i2), 1);
+        Assert(s1 == "c");
+        Assert(f==3.14f);
+        Assert(i==12);
+        Assert(i2 == 5);
+        printf("%zd\n", start);
+        Assert(start == 12);
     }
 
     // check that svto is ok with CRLF (whitespace) following a conversion.

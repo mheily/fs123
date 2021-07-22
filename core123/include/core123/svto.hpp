@@ -50,13 +50,17 @@
 // with strtof, strtod or strtold, which "do the right thing" with
 // NaN, Inf, etc.
 //
+// If T is a char (i.e., str_view::value_type), then a single
+// character is extracted, and start is advanced by one.
+//
 // If T is an integral type, then the extraction is done with
 // scanint<T>, which is much faster than using an istream.
 //
-// If T is a tuple of references (c.f. std::tie), then each of the the
-// members of the tuple is svscan'ed in order.  The character
-// immediately following each represented value is ignored (so that
-// any single-character is viable as a delimiter).
+// If T is a tuple of references (c.f. std::tie), then each of the
+// members of the tuple is svscan'ed in order.  If the values are
+// separated by whitespace, this works as expected.  If there are
+// other punctuation characters, you may have to 'tie' them up
+// explicitly.
 //
 // An overload of svscan is intended for use on input ranges:
 //
@@ -152,13 +156,19 @@ svscan(str_view sv, Type* vp, size_t start=0){
     is >> *vp;    // Type must have an istream extraction operator>>
     if(!is)
         throw invalid_argument("svscan<T>:  stream extraction operator>> failed");
-    return start + is.tellg();
+    // !! calling tellg on a stream that's at EOF returns -1 and sets failbit !!
+    return is.eof()? sv.size() : (start + is.tellg());
 }
 
 template <typename Type>
 typename std::enable_if<std::is_integral<Type>::value, size_t>::type
 svscan(str_view sv, Type* vp, size_t start=0){
-    return scanint<Type>(sv, vp, start);
+    if constexpr(std::is_same_v<Type, str_view::value_type>){
+        *vp = sv.at(start);
+        return start+1;
+    }else{
+        return scanint<Type>(sv, vp, start);
+    }
 }
 
 // Do the floating point types with strto{f,d,ld}
@@ -211,9 +221,8 @@ size_t svscan(str_view sv, IITER b, IITER e, size_t start = 0){
 template <class Tuple, std::size_t ... Is>
 size_t svscan_tuple(str_view sv, const Tuple& t, size_t start, std::index_sequence<Is...>){
     unused(sv);   // gcc -Wunused-but-set-parameter when Tuple is empty
-    // expand pack over the binary comma expression
-    ((start = svscan(sv, &std::get<Is>(t), start)+1), ... );
-    return start - (std::tuple_size<Tuple>::value!=0);
+    ((start = svscan(sv, &std::get<Is>(t), start)) , ... );
+    return start;
 }
 
 template <typename ... Types>
