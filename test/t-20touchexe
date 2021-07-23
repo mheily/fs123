@@ -1,6 +1,7 @@
 #!/bin/bash
 
-trap 'echo 1>&2 $0: Exiting on ERR trap, line: $LINENO; exit 1' ERR
+trap 'echo 1>&2 $0: Exiting on ERR trap, line: $LINENO; touch $exportdir/done $exportdir/failed; exit 1' ERR
+trap 'echo 1>&2 $0: Exiting on INT or TERM trap; touch $exportdir/done $exportdir/failed; exit 1' INT TERM
 
 # Check that it's ok to repeatedly run a binary from a mounted
 # directory while somebody else is touch-ing it (and therefore
@@ -13,6 +14,9 @@ me=$(basename $0)
 dir=$(cd $EXPORT_ROOT && mktemp -d -p. $me.XXXXXX)
 exportdir=$EXPORT_ROOT/$dir
 mtdir=$MTPT/$dir
+: ${TOUCHEXE_HOWMANY:=80}
+: ${TOUCHEXE_DELAY:=3}
+# 80 * 3 * 0.5 =approx 2 minutes
 
 # populate the exportdir.  We know there's a /bin/bash because
 # the #! at the top of the file invokes it.  So let's use that.
@@ -30,16 +34,16 @@ EOF
 # it's time to stop.
 (
 set -x
-for i in $(seq 20); do
+for i in $(seq $TOUCHEXE_HOWMANY); do
     # Sleep for [0,3) seconds:
     if [ -e $exportdir/failed ]; then
         break
     fi
-    # sleep for [0, 3.0) seconds.  python seems like
+    # sleep for [0, TOUCHEXE_DELAY) seconds.  python seems like
     # overkill, but posix doesn't guarantee that
     # sleep works with fractional seconds.
     # sleep $(printf %d.%03d $(($RANDOM%3)) $(($RANDOM%1000)))
-    python3 -c 'import time,random; time.sleep(3.*random.random())'
+    python3 -c 'import time,random,sys; time.sleep(float(sys.argv[1])*random.random())' $TOUCHEXE_DELAY
     touch $exportdir/bash
 done
 touch $exportdir/done
@@ -49,13 +53,20 @@ touch $exportdir/done
 # segfaults, which would mean we've regressed on the bugfix in
 # be0d13).
 nexe=0
-while [ ! -e  $mtdir/done ]  ; do
+while [ ! -e  $exportdir/done ]  ; do
     : $((nexe++)) ; 
     if ! $mtdir/bash -c '' ; then
         echo FAILED on try $nexe of $mtdir/bash 1>&2
         # the sleep/touch loop is still running.  Tell it to stop.
         touch $exportdir/failed
+        tmpdir=$(mktemp -d -p/tmp touchexe.XXXXXX)
+        echo Copying $RCroot and $MTroot to $tmpdir 1>&2
+        cp -a $RCroot $tmpdir/$(basename $RCroot) || true
+        cp -a $MTroot $tmpdir/$(basename $MTroot) || true
         exit 1
+    fi
+    if [ $((nexe%1000)) -eq 0 ]; then
+        echo 1>&2 Execed bash $nexe times
     fi
 done
 wait
