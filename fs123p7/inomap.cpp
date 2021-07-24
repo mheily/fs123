@@ -138,11 +138,12 @@ uint64_t ino_update_validator(fuse_ino_t ino, uint64_t validator) try {
     if(validator > ir.validator)
         ir.validator = validator;
     if(validator < ir.validator )
-        throw se(EIO, fmt("ino_update_validator:  new validator (%lu) is less than cached validator (%lu).  Server is confused.", (unsigned long)validator, (unsigned long)ir.validator));
-    DIAGfkey(_inomap, "update validator(ino=%lu): old: %lu, new: %lu\n", (unsigned long)ino, (unsigned long)ret, (unsigned long)validator);
+        throw ino_out_of_order_validator(validator, ir.validator, _fullname(ir));
     return ret;
+ }catch(ino_out_of_order_validator&){
+    throw;  // call site may be looking for this.  Don't nest it.
  }catch(std::exception& e){
-    std::throw_with_nested(std::runtime_error(strfunargs(__func__, ino, ino_to_fullname_nothrow(ino))));
+    std::throw_with_nested(std::runtime_error(strfunargs(__func__, ino)));
  }
 
 uint64_t ino_get_validator(fuse_ino_t ino) try {

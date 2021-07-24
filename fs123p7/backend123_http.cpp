@@ -1167,8 +1167,8 @@ backend123_http::refresh(const req123& req, reply123* replyp) try{
         // so we'll stick  with no-cache for now.
         cache_control.push_back("no-cache");
     }
-    if(req.max_stale >= 0){
-        cache_control.push_back("max-stale=" + std::to_string(req.max_stale));
+    if(req.max_stale){
+        cache_control.push_back("max-stale=" + std::to_string(*req.max_stale));
     }
     
     if(!cache_control.empty()){

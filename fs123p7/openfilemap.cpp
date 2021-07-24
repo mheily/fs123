@@ -18,11 +18,6 @@
 using namespace core123;
 
 namespace{
-#define STATS_INCLUDE_FILENAME "openfilemap_statistic_names"
-#define STATS_STRUCT_TYPENAME openfilemap_stats_t
-#include <core123/stats_struct_builder>
-openfilemap_stats_t stats;
-
 auto _ofmap = diag_name("ofmap");
 auto _shutdown = diag_name("shutdown");
 
@@ -183,11 +178,15 @@ void scan(){
         //
         // But first, bump the refcnt so that a release while we're
         // not holding the lock doesn't knock mi out from under us
+        // DANGER!  This is not RAII-protected.  DO NOT ALLOW AN
+        // UNCAUGHT EXCEPTION TO SKIP THE CALL TO decrefcnt below!
         mr.refcnt++;
         reply123 r;
         lk.unlock();
         try{
-            r = begetattr_fresh(ino);
+            // get attributes that should not be stale, but may come from a cache.
+            // I.e., max_stale=0, no_cache=false.
+            r = begetattr(ino, 0, false); 
             stats.of_getattrs++;
             DIAGfkey(_ofmap, "scan:  ino=%lu, newreply.expires at: %.6f (%.6f)\n",
                      ino, tp2dbl(r.expires), tpuntildbl(r.expires));
@@ -209,13 +208,15 @@ void scan(){
                 // ino_update_validator throws an exception.
                 must_notify = (old_validator != r_validator);
             }catch(std::exception& e){
-                // The server(s) are sending us non-monotonic
-                // validators.  We don't know what to believe.  So we
-                // act as if the server err-ed out for some other
-                // reason.  We'll notify the kernel to flush this ino
-                // and then 'continue' with the loop without fiddling
-                // with ofpq.  Maybe the server(s) will get their act
-                // together and things will eventually settle down (?).
+                // Something is wrong.  One possibility is that we're
+                // getting non-monotonic validators and we don't know
+                // what to believe.  So we act as if the server err-ed
+                // out for some other reason.  We'll notify the kernel
+                // to flush this ino and then 'continue' with the loop
+                // without fiddling with ofpq.  Maybe things will
+                // eventually settle down (?).
+                if(dynamic_cast<ino_out_of_order_validator*>(&e))
+                    stats.non_monotonic_validators++;
                 r.eno = EIO;  // anything non-zero
                 must_notify = true;  // unnecessary?  gcc6 thinks it 'may be used uninitialized' otherwise.
                 complain(LOG_WARNING, e, "openfilemap::scan: ino=%lu. Pretend that reply.eno=%d (EIO) to avoid corrupting the openfilemap and inomap.", (unsigned long)ino, EIO);
@@ -434,7 +435,6 @@ openfile_report(){
     std::lock_guard<std::mutex> lg(mtx);
     std::ostringstream oss;
     oss << "ofpq_size: " << ofpq.size() << "\n"
-        << "ofmap_size: " << ofmap.size() << "\n"
-        << stats;
+        << "ofmap_size: " << ofmap.size() << "\n";
     return oss.str();
 }

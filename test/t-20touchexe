@@ -70,7 +70,4 @@ while [ ! -e  $exportdir/done ]  ; do
     fi
 done
 wait
-echo OK.  Executed $mtdir/bash $nexe times
-
-
-
+echo OK.  Executed $mtdir/bash $nexe times with $(grep non_monotonic_validators $MTPT/.fs123_statistics)

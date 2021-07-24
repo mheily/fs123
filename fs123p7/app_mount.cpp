@@ -96,10 +96,6 @@ extern int fs123p7_argc;
 using namespace core123;
 
 namespace {
-#define STATS_INCLUDE_FILENAME "fs123_statistic_names"
-#define STATS_STRUCT_TYPENAME fs123_stats_t
-#include <core123/stats_struct_builder>
-fs123_stats_t stats;
 atomic_scoped_nanotimer elapsed_asnt; // measures time since program initialization.
 
 // llops reports one line about every lowlevel operation
@@ -699,7 +695,7 @@ void beflush(fuse_ino_t pino, str_view lastcomponent){
     auto key = attrcache_key(pino, lastcomponent);
     attrcache->erase(key);
     std::string name = fullname(pino, lastcomponent);
-    req123 req = req123::attrreq(name, req123::MAX_STALE_UNSPECIFIED);
+    req123 req = req123::attrreq(name);
     req.no_cache = true;
     if(encrypt_requests)
         encrypt_request(req);
@@ -768,34 +764,40 @@ reply123 begetchunk_dir(fuse_ino_t ino, bool begin, int64_t start){
 reply123 begetchunk_file(fuse_ino_t ino, int64_t startkib, bool no_cache = false){
     reply123 ret;
     std::string name = ino_to_fullname(ino);
-    req123 req = req123::filereq(name, Fs123Chunk, startkib, req123::MAX_STALE_UNSPECIFIED);
+    req123 req = req123::filereq(name, Fs123Chunk, startkib);
     req.no_cache = no_cache;
     berefresh(ino, req, &ret, true);
     return ret;
 }    
 
-reply123 begetattr(fuse_ino_t pino, str_view lc, fuse_ino_t ino, int max_stale){
+reply123 begetattr(fuse_ino_t pino, str_view lc, fuse_ino_t ino, std::optional<int> max_stale, bool no_cache){
     auto key = attrcache_key(pino, lc);
-    auto cached_reply = attrcache->lookup(key);
-    if( !cached_reply.expired() ){
-        DIAGkey(_getattr, "attrcache hit: " << cached_reply.content << " ec: " << cached_reply.estale_cookie << " good_till: " << ins(cached_reply.good_till) << " (" << ins(until(cached_reply.good_till)) << ")\n");
-        if( !cookie_mismatch(ino, cached_reply.estale_cookie) )
-            return {std::move(cached_reply.content), content_codec::CE_IDENT, cached_reply.estale_cookie, cached_reply.ttl()};
-        // It's not clear how we get here.  But if we're here
-        // the reply stored in the attrcache is for the same name, but
-        // a different 'ino' than the one we're being asked about.
-        // Delete the attrcache entry and fall through to refresh.
-        complain(LOG_NOTICE, "attrcache erased:  cookie mismatch in " + strfunargs("begetattr", pino, lc,  ino) + " cached.sb: " + cached_reply.content + " cached.estale_cookie: " + str(cached_reply.estale_cookie));
+    if(no_cache){
         attrcache->erase(key);
+    }else{
+        auto cached_reply = attrcache->lookup(key);
+        if( !cached_reply.expired() ){
+            DIAGkey(_getattr, "attrcache hit: " << cached_reply.content << " ec: " << cached_reply.estale_cookie << " good_till: " << ins(cached_reply.good_till) << " (" << ins(until(cached_reply.good_till)) << ")\n");
+            if( !cookie_mismatch(ino, cached_reply.estale_cookie) )
+                return {std::move(cached_reply.content), content_codec::CE_IDENT, cached_reply.estale_cookie, cached_reply.ttl()};
+            // It's not clear how we get here.  But if we're here
+            // the reply stored in the attrcache is for the same name, but
+            // a different 'ino' than the one we're being asked about.
+            // Delete the attrcache entry and fall through to refresh.
+            complain(LOG_NOTICE, "attrcache erased:  cookie mismatch in " + strfunargs("begetattr", pino, lc,  ino) + " cached.sb: " + cached_reply.content + " cached.estale_cookie: " + str(cached_reply.estale_cookie));
+            attrcache->erase(key);
+        }
     }
-    DIAGkey(_getattr, str("attrcache miss: pino:", pino, "lastcomponent:", lc, "max_stale:", max_stale));
+    DIAGkey(_getattr, str("attrcache miss: pino:", pino, "lastcomponent:", lc));
     // If we get here, the key is no longer in the attrcache.  Either
     // it was expired, in which case it was erased as part of the lookup,
     // or it was unexpired but had a cookie_mismatch, in which case
     // we erased it on the line above.  In any case, there's no need
     // to erase it again.
     std::string name = fullname(pino,  lc);
-    req123 req = req123::attrreq(name, max_stale);
+    req123 req = req123::attrreq(name);
+    req.max_stale = max_stale;
+    req.no_cache = no_cache;
     reply123 ret;
     berefresh(ino, req, &ret, true);
     if(ret.eno == 0){
@@ -820,11 +822,6 @@ reply123 begetattr(fuse_ino_t pino, str_view lc, fuse_ino_t ino, int max_stale){
         }
     }
     return ret;
-}
-
-reply123 begetattr(fuse_ino_t ino, int max_stale){
-    auto pino_name = ino_to_pino_name(ino);
-    return begetattr(pino_name.first, pino_name.second, ino, max_stale);
 }
 
 reply123 begetstatfs(fuse_ino_t ino) {
@@ -1312,7 +1309,7 @@ void fs123_lookup(fuse_req_t req, fuse_ino_t ino, const char *name) try
     DIAGfkey(_llops, "lookup(%p, pino=%ju, name=%s)\n", req, (uintmax_t)pino, name);
     if(lookup_special_ino(req, pino, name))
         return;
-    auto reply = begetattr(pino, name, 0, req123::MAX_STALE_UNSPECIFIED);
+    auto reply = begetattr(pino, name, 0, {}, false);
     struct fuse_entry_param e = {};
     double ttl = dur2dbl(ttl_or_stale(reply));
     e.attr_timeout = no_kernel_attr_caching ? 0. : ttl;
@@ -1370,7 +1367,7 @@ void fs123_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) tr
     if( ino>1 && ino <= max_special_ino )
         return getattr_special_ino(req, ino, fi);
 
-    auto reply = begetattr(ino, req123::MAX_STALE_UNSPECIFIED);
+    auto reply = ::begetattr(ino, {}, false);
     if(reply.eno){
         if(reply.eno == ENOENT)
             stats.getattr_enoents++;
@@ -1708,21 +1705,17 @@ void fs123_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) try {
 
     if(ino > 1 && ino <= max_special_ino)
         return open_special_ino(req, ino, fi);
-    reply123 r = begetattr(ino, req123::MAX_STALE_UNSPECIFIED);
+    bool no_cache = false;
+ tryagain:
+    auto r = ::begetattr(ino, {}, no_cache);
     if(r.eno != 0)
         return reply_err(req, r.eno);
-#ifdef O_DIRECT
-    fi->direct_io = fi->flags&O_DIRECT;
-#endif
-    if(no_kernel_data_caching)
-        fi->direct_io = true;
-
     // Update the inomap with the just-retrieved validator.  We can
     // keep the kernel-cache if the just-retrieved validator is the
     // same as the validator that had been recorded in the inomap
     // (returned by ino_update_validator).  The inomap is initialized
     // with a zero validator, which compares unequal to just-retrieved
-    // mtim the very first time we open an ino.  This would result in
+    // validator the very first time we open an ino.  This would result in
     // an "unnecessary" keep_cache=0 the very first time we open an
     // ino, but since there's nothing to keep, it's moot.  We could
     // avoid that by also comparing old_validator with zero.
@@ -1730,22 +1723,36 @@ void fs123_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) try {
     uint64_t old_validator;
     try{
         old_validator = ino_update_validator(ino, new_validator);
-    }catch(std::exception& e){
-        // We *may* have seen this once in March 2019, and we don't
-        // really know what caused it.  Notifying the kernel seems
-        // prudent because if the kernel caches are goofed up, we
-        // might not get another chance.  We might also want to flush
-        // the attrcache, diskcache and http proxy caches, but let's
-        // understand the root-cause first.
-        lowlevel_notify_inval_inode_detached(ino, 0, 0);
-        std::throw_with_nested(std::runtime_error("non-monotonic validator.  Probable server misconfiguration.  lowlevel_notify_inval_inode_detached(ino) called"));
+    }catch(ino_out_of_order_validator& e){
+        // The server shouldn't be sending out-of-order validators.
+        // BUT - messages can be overtaken in transit, so on rare
+        // occasions, it's possible to get here even with a properly
+        // functioning server.
+        stats.non_monotonic_validators++;
+        if(no_cache){
+            lowlevel_notify_inval_inode_detached(ino, 0, 0);
+            // We're unable (at this moment) to confidently open the
+            // file due to idiosyncracies of caches, statelessness,
+            // etc.  ESTALE is as good an errno as any...
+            std::throw_with_nested(se(ESTALE, "non-monotonic validator even with no_cache=true.  lowlevel_notify_inval_inode_detached(ino) called"));
+        }
+        // try again with no_cache
+        complain(LOG_WARNING, e, "fs123_open:  non-monotonic validator in fs123_open.  Will retry with no_cache=true");
+        no_cache = true;
+        goto tryagain;
     }
+    fi->keep_cache = (old_validator == new_validator);
+
+#ifdef O_DIRECT
+    fi->direct_io = fi->flags&O_DIRECT;
+#endif
+    if(no_kernel_data_caching)
+        fi->direct_io = true;
 
     // If the reply has max-age==0 turn on direct_io to completely
     // avoid the openfilemap logic.
     if(r.max_age().count() == 0)
         fi->direct_io = true;
-    fi->keep_cache = (old_validator == new_validator);
     if(!fi->direct_io){
         fi->fh = openfile_register(ino, r);
     }else{
@@ -2269,8 +2276,9 @@ void fs123_getlk(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info*, struct 
 /*static*/ const unsigned
 volatiles_t::hw_concurrency = std::thread::hardware_concurrency();
 
-reply123 begetattr_fresh(fuse_ino_t ino){
-    return begetattr(ino, 0);
+reply123 begetattr(fuse_ino_t ino, std::optional<int> max_stale, bool no_cache){
+    auto pino_name = ino_to_pino_name(ino);
+    return begetattr(pino_name.first, pino_name.second, ino, max_stale, no_cache);
 }
 
 uint64_t

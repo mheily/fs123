@@ -554,7 +554,7 @@ distrib_cache_backend::handle_present(const string& peerurl){
         be = make_unique<backend123_http>(add_sigil_version(peerurl), "",
                                           aicache, vols, backend123_http::distrib_cache);
         // Get the uuid, which also checks connectivity.
-        req123 req("/p" + peer_handler_t::VERSION + "/p/uuid", req123::MAX_STALE_UNSPECIFIED);
+        req123 req("/p" + peer_handler_t::VERSION + "/p/uuid");
         // FIXME?  - time the be->refresh().  If it's slow (whatever
         // that means) return before calling insert_peer.
         be->refresh(req, &rep);
@@ -768,7 +768,7 @@ peer_handler_t::p(req::up req, uint64_t etag64, istream&) try {
         return exception_reply(move(req), http_exception(400, "Incorrect /p/sub-version"));
     if(req->query.data()) // req->query is non-null.  It might still be 0-length
         versioned_url += "?" + string(req->query);
-    req123 myreq(versioned_url.substr(VERSION.size()), req123::MAX_STALE_UNSPECIFIED);
+    req123 myreq(versioned_url.substr(VERSION.size()));
     myreq.no_peer_cache = true;
     reply123 reply123;
     if(etag64){

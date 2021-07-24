@@ -469,6 +469,7 @@ void diskcache::detached_upstream_refresh(req123& req, const std::string& path, 
     // It's a background request, so it's not latency sensitive.  If we're
     // going to wait for a network round-trip, we might as well insist
     // on something that's actually fresh.  So set max_stale to 0.
+    // Should we go further and ask for no_cache?
     req.max_stale = 0;
     upstream_refresh(req, path, replyp, true/*already_detached*/, false/*usable_if_error*/);
     stats.dc_maybe_rf_retired++;
@@ -623,8 +624,8 @@ diskcache::refresh(const req123& req, reply123* r) /*override*/ try {
     // On the other hand, stale-while-revalidate and max-stale have
     // clearly defined meaning in http.
     auto swr = r->stale_while_revalidate + std::chrono::seconds(req.past_stale_while_revalidate);
-    if(req.max_stale >= 0){
-       auto reqms = std::chrono::seconds(req.max_stale);
+    if(req.max_stale){
+       auto reqms = std::chrono::seconds(*req.max_stale);
         if(reqms < swr)
             swr = reqms;
     }

@@ -162,8 +162,8 @@ struct req123{
     // reasonable defaults by the ctor.  The caller can set them after
     // construction if desired.
     bool no_cache = false;
-    // The only values of max_stale actually used are 0 and
-    // MAX_STALE_UNSPECIFIED.  Should it be a bool instead?  And does
+    // The only values of max_stale actually used is 0.
+    // Should it be a bool instead?  And does
     // max-stale=0 really do what we want?  I.e., does it override the
     // stale-while-revalidate attribute of cached resources?  If the
     // request says max-stale=0 and the cached resource is stale by
@@ -173,26 +173,24 @@ struct req123{
     // max-stale=0 is very different from no-cache.  The former will
     // accept cached but not-stale resources while the latter demands
     // a refresh, even for non-stale resources.
-    int max_stale;
+    std::optional<int> max_stale;
     // no_peer_cache breaks loops in the distributed cache backend.
     // The fact that we need a flag in the generic 'req' strongly
     // suggests a mis-design.
     bool no_peer_cache = false;
     req123() = delete;
-    req123(const std::string& _urlstem, int _max_stale) :
-        urlstem(_urlstem),
-        max_stale(_max_stale) // -1 means not-specified.  0 means no-stale content!
+    req123(const std::string& _urlstem) :
+        urlstem(_urlstem)
     {}
     static std::atomic<unsigned long> cachetag;
-    static req123 attrreq(const std::string& name, int max_stale);
+    static req123 attrreq(const std::string& name);
     static req123 dirreq(const std::string& name, uint64_t ckib, bool begin, int64_t chunkstart);
-    static req123 filereq(const std::string& name, uint64_t ckib, int64_t chunkstartkib, int max_stale);
+    static req123 filereq(const std::string& name, uint64_t ckib, int64_t chunkstartkib);
     static req123 linkreq(const std::string& name);
     static req123 statfsreq(const std::string& name);
     static req123 xattrreq(const std::string& name, uint64_t chunksize,
 			 const char *attrname = nullptr);
     static req123 statsreq();
-    static const int MAX_STALE_UNSPECIFIED = -1;
 };
 
 // backend123 is an abstract base class.  Descendents are:

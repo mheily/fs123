@@ -40,10 +40,10 @@ backend123::add_sigil_version(const std::string& urlpfx) /*static*/ {
 }
 
 req123
-req123::attrreq(const std::string& name, int max_stale) /*static*/ {
+req123::attrreq(const std::string& name) /*static*/ {
     std::string escname = urlescape(name);
     std::string ret = "/a" + escname;
-    return {add_cachetag(ret, false), max_stale};
+    return {add_cachetag(ret, false)};
 }    
 
 req123
@@ -51,34 +51,34 @@ req123::dirreq(const std::string& name, uint64_t ckib, bool begin, int64_t chunk
     std::string escname = urlescape(name);
     std::string ret = "/d" + escname + "?" + std::to_string(ckib) + ";" +
 	std::to_string(begin) + ";" + std::to_string(chunkstart);
-    return {add_cachetag(ret, true), MAX_STALE_UNSPECIFIED};
+    return {add_cachetag(ret, true)};
 }    
 
 req123
-req123::filereq(const std::string& name, uint64_t ckib, int64_t chunkstartkib, int max_stale) /*static*/ {
+req123::filereq(const std::string& name, uint64_t ckib, int64_t chunkstartkib) /*static*/ {
     std::string escname = urlescape(name);
     std::string ret = "/f" + escname + "?" + std::to_string(ckib) + ";" + std::to_string(chunkstartkib);
-    return {add_cachetag(ret, true), max_stale};
+    return {add_cachetag(ret, true)};
 }
 
 req123
 req123::linkreq(const std::string& name) /*static*/ {
     std::string escname = urlescape(name);
     std::string ret = "/l" + escname;
-    return {add_cachetag(ret, false), MAX_STALE_UNSPECIFIED};
+    return {add_cachetag(ret, false)};
 }
 
 req123
 req123::statfsreq(const std::string& name) /*static*/ {
     std::string escname = urlescape(name);
     std::string ret = "/s" + escname;
-    return {add_cachetag(ret, false), MAX_STALE_UNSPECIFIED};
+    return {add_cachetag(ret, false)};
 }
 
 req123
 req123::statsreq() /*static*/ {
     std::string ret = "/n";
-    return {add_cachetag(ret, false), MAX_STALE_UNSPECIFIED};
+    return {add_cachetag(ret, false)};
 }
 
 req123
@@ -90,6 +90,6 @@ req123::xattrreq(const std::string& name, uint64_t ckib,
 	ret += urlescape(attrname);
     }
     ret += ";";
-    return {add_cachetag(ret, true), MAX_STALE_UNSPECIFIED};
+    return {add_cachetag(ret, true)};
 }
 
