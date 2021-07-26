@@ -403,9 +403,13 @@ private:
     // How much space is "available" at the 'front' and 'back' of buffer - NOT counting
     // the space we pre-allocated for the secretbox leader and padding
     size_t buf_avail_back() const {
+        if(buf.avail_back() < secretbox_padding)
+            throw std::out_of_range("req::buf_avail_back: negative available space");
         return buf.avail_back() - secretbox_padding;
     }
     size_t buf_avail_front() const {
+        if(buf.avail_front() < secretbox_leadersz)
+            throw std::out_of_range("req::buf_avail_front: negative available space");
         return buf.avail_front() - secretbox_leadersz;
     }
     void internal_exception(const std::exception& e);

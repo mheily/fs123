@@ -614,9 +614,13 @@ req::parse_and_handle(req::up req) try {
         uint64_t lenkib;
         int64_t offset;
         int begin;
-        auto from = svscan(req->query, &lenkib);
-        from = svscan(req->query, &begin, from+1); // +1 skip semicolon (or other separator)
-        svscan(req->query, &offset, from+1);       // +1 skip semicolon (or other separator)
+        try{
+            auto from = svscan(req->query, &lenkib);
+            from = svscan(req->query, &begin, from+1); // +1 skip semicolon (or other separator)
+            svscan(req->query, &offset, from+1);       // +1 skip semicolon (or other separator)
+        }catch(std::exception& e){
+            std::throw_with_nested(http_exception(400, "failed to parse query in /d...?" + std::string(req->query)));
+        }
         req->allocate_pbuf(lenkib*1024);
         handler.d(std::move(req), inm64, !!begin, offset);
     }else if(req->function == "f"){
@@ -624,8 +628,12 @@ req::parse_and_handle(req::up req) try {
         // The query is Len;Offset
         // Len and offset are unsigned kibibytes.
         uint64_t lenkib, offsetkib;
-        auto from = svscan(req->query, &lenkib); 
-        svscan(req->query, &offsetkib, from+1);  // +1 skip semicolon (or other separator)
+        try{
+            auto from = svscan(req->query, &lenkib); 
+            svscan(req->query, &offsetkib, from+1);  // +1 skip semicolon (or other separator)
+        }catch(std::exception& e){
+            std::throw_with_nested(http_exception(400, "failed to parse query in /f...?" + std::string(req->query)));
+        }
         static size_t validator_space = 32; // room for a netstring(to_string(uint64_t));
         auto requested_len = lenkib*1024;
         req->requested_len = requested_len;
@@ -1055,12 +1063,10 @@ bool req::add_dirent(core123::str_view name, long offset, int type, uint64_t est
         throw core123::se(ENAMETOOLONG, "dirbuf::add");
     if(name.size() == 0)
         throw core123::se(EINVAL, "dirbuf::add:  zero-length name");
-    std::ostringstream oss;
-    oss << core123::netstring(name) << " " << type << " " << estale_cookie << "\n";
-    size_t osslen = core123::ostream_size(oss);
-    if(osslen > buf_avail_back())
+    std::string entry = core123::netstring(name) + " " + std::to_string(type) + " " + std::to_string(estale_cookie) + "\n";
+    if(entry.size() > buf_avail_back())
         return false;
-    buf = buf.append(oss.str());
+    buf = buf.append(entry);
     dir_lastoff = offset;
     return true;
 }

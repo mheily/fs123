@@ -36,21 +36,36 @@ void exportd_handler::err_reply(fs123p7::req::up req, int eno){
     errno_reply(std::move(req), eno, cache_control(eno, pi, nullptr));
 }
 
-// In general, it's not necessary to catch the handler callbacks.
-// See the discussion in fs123server.hpp under 'Exceptions'.  If
-// they throw, the caller (in libfs123) will log a complaint and carry
-// on.  When the up_req goes out-of-scope, the req's destructor will
-// call exception_reply with a 500 status code.
+// Theoretically, it's not necessary to catch the handler callbacks.
+// See the discussion in fs123server.hpp under 'Exceptions'.  But not
+// doing so results in some errorlog chatter and an exception_reply
+// with a 500 status code, which may not be the intended outcome.  So,
+// we put a try/catch around the handler callbacks and call ex_reply
+// in the catch block
 //
-// On the other hand, detecting a failed system call
-// and reporting the errno with err_reply is *not* exceptional.
-// System errors in the system_category() should generally be caught
-// and handled by calling err_reply.
+// Furthermore, detecting a failed system call and reporting the errno
+// with err_reply is *not* exceptional.  System errors in the
+// system_category() should generally be caught and handled by calling
+// err_reply.
 //
-// If we want to reply with some other http error (e.g., 40x), then
-// call reply_exception and return.  
+// And finally, if we want to reply with some other http error (e.g.,
+// 40x), then do:
+//     return reply_exception(move(req), http_exception(400,...)).
+
+void exportd_handler::ex_reply(fs123p7::req::up req, std::exception &e){
+    // if we're looking at a system_error, then call err_reply with
+    // eno=code.value().  Otherwise, call exception_reply.
+    auto sep = dynamic_cast<std::system_error*>(&e);
+    if(sep){
+        auto& code = sep->code();
+        if(code.category() == std::system_category())
+            return err_reply(std::move(req), code.value());
+    }
+    exception_reply(std::move(req), e);
+}
+
 void
-exportd_handler::a(fs123p7::req::up req){
+exportd_handler::a(fs123p7::req::up req) try {
     auto full_path = opts.export_root + std::string(req->path_info);
     struct stat sb;
     if( ::lstat(full_path.c_str(), &sb) < 0 ){
@@ -66,10 +81,12 @@ exportd_handler::a(fs123p7::req::up req){
     auto mv = monotonic_validator(sb);
     auto pi = req->path_info;
     a_reply(std::move(req), sb, mv, esc, cache_control(0, pi, &sb));
-}
+} catch (std::exception& e){
+    ex_reply(std::move(req), e);
+ }
 
 void
-exportd_handler::d(fs123p7::req::up req, uint64_t inm64, bool begin, int64_t offset) {
+exportd_handler::d(fs123p7::req::up req, uint64_t inm64, bool begin, int64_t offset) try {
     auto fname = opts.export_root + std::string(req->path_info);
     // use open+fdopendir so we can use O_NOFOLLOW for safety
     acfd xfd = open(fname.c_str(), O_DIRECTORY | O_NOFOLLOW | O_RDONLY);
@@ -104,6 +121,8 @@ exportd_handler::d(fs123p7::req::up req, uint64_t inm64, bool begin, int64_t off
     }
     bool at_eof = !de;
     d_reply(std::move(req), at_eof, etag64, esc, cc);
+} catch (std::exception& e){
+    ex_reply(std::move(req), e);
  }
 
 void
@@ -118,7 +137,7 @@ exportd_handler::f(fs123p7::req::up req, uint64_t inm64, size_t len, uint64_t of
     struct stat sb;
     sew::fstat(fd, &sb);
     if(!S_ISREG(sb.st_mode))
-	httpthrow(400, fmt("expected file, but mode is %o for %s", sb.st_mode, fname.c_str()));
+	return err_reply(std::move(req), EISDIR); // EISDIR isn't always precisely correct, but it's close.
     auto esc = estale_cookie(fd, sb, fname);
     auto etag64 = compute_etag(sb, esc);
     auto cc = cache_control(0, req->path_info, &sb);
@@ -129,12 +148,8 @@ exportd_handler::f(fs123p7::req::up req, uint64_t inm64, size_t len, uint64_t of
     // we always do the read exactly as requested, directly into buf
     auto nread = sew::pread(fd, buf, len, offset);
     f_reply(std::move(req), nread, validator, etag64, esc, cc);
- }catch(std::system_error& se){
-    auto& code = se.code();
-    if(code.category() == std::system_category())
-        return (void)err_reply(std::move(req), code.value());
-    // throw prompts the caller to generate a complaint.
-    std::throw_with_nested(std::runtime_error("in exportd_handler::f() path_info=" + std::string(req->path_info)));
+ }catch(std::exception& e){
+    ex_reply(std::move(req), e);
  }
 
 void
@@ -151,14 +166,16 @@ exportd_handler::l(fs123p7::req::up req) try {
  }
 
 void
-exportd_handler::s(fs123p7::req::up req){
+exportd_handler::s(fs123p7::req::up req) try {
     struct statvfs svb;
     sew::statvfs(opts.export_root.c_str(), &svb);
     // The cache-control for stat isn't path-specific, so it isn't appropriate
     // to go looking for .fs123_cache_control files.  Another command line
     // option??
     s_reply(std::move(req), svb, "max-age=30,stale-while-revalidate=30,stale-if-error=86400");
-}
+} catch (std::exception& e){
+    ex_reply(std::move(req), e);
+ }
 
 void
 exportd_handler::n(fs123p7::req::up req){
@@ -166,7 +183,7 @@ exportd_handler::n(fs123p7::req::up req){
 }
 
 void
-exportd_handler::x(fs123p7::req::up req, size_t len, std::string name){
+exportd_handler::x(fs123p7::req::up req, size_t len, std::string name) try {
     std::string fname = opts.export_root + std::string(req->path_info);
     ssize_t sz;
     std::string buf(len, '\0');
@@ -190,7 +207,9 @@ exportd_handler::x(fs123p7::req::up req, size_t len, std::string name){
         return x_reply(std::move(req), std::to_string(sz), cc);
     else
         return x_reply(std::move(req), std::move(buf), cc);
-}
+} catch (std::exception& e){
+    ex_reply(std::move(req), e);
+ }
 
 secret_manager*
 exportd_handler::get_secret_manager() /* override */ {

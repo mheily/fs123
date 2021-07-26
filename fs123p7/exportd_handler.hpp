@@ -32,6 +32,7 @@ struct exportd_handler: public fs123p7::handler_base{
     ~exportd_handler(){}
 protected:
     void err_reply(fs123p7::req::up, int eno);
+    void ex_reply(fs123p7::req::up, std::exception& e);
     std::string cache_control(int eno, core123::str_view path, const struct stat* sb);
     uint64_t estale_cookie(int fd, const struct stat& sb, const std::string& fullpath);
     uint64_t estale_cookie(const std::string& fullpath, int d_type);
