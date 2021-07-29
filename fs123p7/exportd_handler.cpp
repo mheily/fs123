@@ -205,8 +205,10 @@ exportd_handler::x(fs123p7::req::up req, size_t len, std::string name) try {
     auto cc = cache_control(0, req->path_info, nullptr);
     if (len == 0)
         return x_reply(std::move(req), std::to_string(sz), cc);
-    else
+    else{
+        buf.resize(sz);
         return x_reply(std::move(req), std::move(buf), cc);
+    }
 } catch (std::exception& e){
     ex_reply(std::move(req), e);
  }

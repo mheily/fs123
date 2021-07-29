@@ -2770,8 +2770,13 @@ try {
     auto Fs123LocalLocks = envto<bool>("Fs123LocalLocks",  false);
 
     // If true, Fs123SupportXattr handles listxattr and getxattr
-    // operations, generating "x" requests to the server
-    // (protocol version 7 addition)
+    // operations, generating "x" requests to the server (protocol
+    // version 7 addition).  If false, listxattr and getxattr return
+    // ENOTSUPP to the caller, which tells the kernel to stop
+    // bothering.  It's false by default because it seems wasteful to
+    // do backend lookups for system.posix_acl_access and
+    // system.posix_acl_default "every" time we open a file.  (Measure
+    // this!)
     support_xattr = envto<bool>("Fs123SupportXattr", false);
 
     struct fuse_lowlevel_ops fs123_oper = {};

@@ -13,7 +13,7 @@ me=$(basename $0)
 f=$(cd $EXPORT_ROOT && mktemp -p. $me.XXXXXX)
 chmod a+rx $EXPORT_ROOT/$f
 
-setfattr -n user.testing -v ok || {
+setfattr -n user.testing -v ok "$EXPORT_ROOT/$f" || {
     echo Skipping $me because extended attributes do not appear to work in $EXPORT_ROOT
     exit 0
 }
