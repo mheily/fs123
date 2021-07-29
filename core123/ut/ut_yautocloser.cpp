@@ -17,7 +17,7 @@ using core123::default_close_err_handler;
 // 
 
 void dosomething(){
-    const char *name = "ut_wrapper.tmp";
+    const char *name = "ut_yautocloser.tmp";
     try{
         sew::unlink(name);
     }catch(std::system_error& xe){
