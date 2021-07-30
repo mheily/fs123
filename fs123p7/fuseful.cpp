@@ -699,6 +699,7 @@ int fuseful_main_ll(fuse_args *args, const fuse_lowlevel_ops& llops,
         // it's not that hard to get it "right"...
 	struct stat mount_dotdot_sb;
 	auto [mount_dotdot, mount_filepart] = pathsplit(g_mountpoint);
+        unused(mount_filepart); // otherwise, gcc7 (but not later) complains -Wunused-variable
 	if(mount_dotdot.empty())
 	    mount_dotdot = ".";
 	if(lstat((mount_dotdot).c_str(), &mount_dotdot_sb) == 0)
