@@ -213,6 +213,16 @@ exportd_handler::x(fs123p7::req::up req, size_t len, std::string name) try {
     ex_reply(std::move(req), e);
  }
 
+#if 0 // FOR TESTING ONLY. (See corresponding #if in exportd_handler.hpp)
+// A trivial /p that echos the uri.  This should bypass secretbox,
+// even if we have 'secrets'.  It would be better if testserver
+// understood secretbox!
+void exportd_handler::p(fs123p7::req::up reqp, uint64_t /*inm64*/, std::istream& /*in*/){
+    std::string uri{reqp->uri};
+    p_reply(std::move(reqp), uri, 0/*etag*/, "max-age=99,stale-while-revalidate=999");
+}
+#endif
+
 secret_manager*
 exportd_handler::get_secret_manager() /* override */ {
     return the_sharedkeydir.get();

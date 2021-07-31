@@ -105,6 +105,12 @@ struct bench_handler: public fs123p7::handler_base{
     void s(fs123p7::req::up reqp) override{
         errno_reply(std::move(reqp), ENOTSUP, cc);
     }
+    void p(fs123p7::req::up reqp, uint64_t /*etag64*/, std::istream& /*in*/){
+        // it's the test-server.  Gotta' do *something*...  Let's echo
+        // the uri.
+        std::string uri{reqp->uri};
+        p_reply(std::move(reqp), uri, 0/*etag*/, cc);
+    }
 
     secret_manager* get_secret_manager() override{
         return secret_mgr.get();

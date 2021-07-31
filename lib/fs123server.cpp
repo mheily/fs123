@@ -430,12 +430,12 @@ server::set_signal_handlers() {
 // is called because ETag needs to fold in the secretid (not(!) the secret).
 std::string /* private */
 req::maybe_encode_content(){
-    if(!svr.the_secret_manager)
+    if(!svr.the_secret_manager || function == "p")
         return {};
-    auto esid = svr.the_secret_manager->get_encode_sid();
     if(accept_encoding != content_codec::CE_FS123_SECRETBOX){
         httpthrow(406, "Request must specify Accept-encoding: fs123-secretbox");
     }
+    auto esid = svr.the_secret_manager->get_encode_sid();
     // OK - let's do this...  We're encoding with secretbox!
     if(!blob) 
         allocate_pbuf(0);
@@ -467,10 +467,6 @@ req::parse_and_handle(req::up req) try {
     req->accept_encoding = ae ? content_codec::encoding_stoi(ae) : int16_t(content_codec::CE_IDENT);
 
     struct server& svr = req->svr;
-    if(svr.the_secret_manager &&
-       req->accept_encoding != content_codec::CE_FS123_SECRETBOX)
-        httpthrow(406, "Request must specify Accept-encoding: fs123-secretbox");
-
     // The uri (and the path and query) have the same lifetime as
     // evhr.  Getting the path and query are pretty much free.
     // get_evhttp_uri paid the price to pick them apart and strdup
@@ -532,6 +528,10 @@ req::parse_and_handle(req::up req) try {
         req->path_info = "";
         req->function = upath_sv.substr(nextoff);
     }
+    if(svr.the_secret_manager &&
+       req->function != "p" &&
+       req->accept_encoding != content_codec::CE_FS123_SECRETBOX)
+        httpthrow(406, "Request must specify Accept-encoding: fs123-secretbox");
 
     if(req->function == "e"){
         // decrypt the path to obtain a new function and a new /function/path?query
@@ -561,7 +561,7 @@ req::parse_and_handle(req::up req) try {
         DIAG(_fs123server, "/e request converted to:  query: " << req->query << ", function: " << req->function << ", path_info: " << req->path_info);
     }else{
         // not /e-ncrypted.  Are we willing to look at it?
-        if(svr.the_secret_manager && !svr.gopts->accept_plaintext_requests)
+        if(svr.the_secret_manager && req->function != "p" && !svr.gopts->accept_plaintext_requests)
             httpthrow(406, "Requests must be encrypted and authenticated");
         // [?QUERY]
         const char *q = evhttp_uri_get_query(uri);
@@ -621,7 +621,10 @@ req::parse_and_handle(req::up req) try {
         }catch(std::exception& e){
             std::throw_with_nested(http_exception(400, "failed to parse query in /d...?" + std::string(req->query)));
         }
-        req->allocate_pbuf(lenkib*1024);
+        if(lenkib > max_reply_size/1024)
+            httpthrow(400, fmt("/d requested length too large: %zdk > %zd", lenkib, max_reply_size));
+        auto requested_len = lenkib*1024;
+        req->allocate_pbuf(requested_len);
         handler.d(std::move(req), inm64, !!begin, offset);
     }else if(req->function == "f"){
         server_stats.f_requests++;
@@ -634,12 +637,16 @@ req::parse_and_handle(req::up req) try {
         }catch(std::exception& e){
             std::throw_with_nested(http_exception(400, "failed to parse query in /f...?" + std::string(req->query)));
         }
-        static size_t validator_space = 32; // room for a netstring(to_string(uint64_t));
+        if(lenkib > max_reply_size/1024)
+            httpthrow(400, fmt("/f requested length too large: %zdk > %zd", lenkib, max_reply_size));
         auto requested_len = lenkib*1024;
+        static size_t validator_space = 32; // room for a netstring(to_string(uint64_t));
         req->requested_len = requested_len;
         req->allocate_pbuf(req->requested_len + validator_space);
         req->buf = req->buf.subspan(validator_space, 0); // buf points to beginning of requested_len
         auto reqbufdata = req->buf.data();
+        if(offsetkib > std::numeric_limits<uint64_t>::max()/1024)
+            httpthrow(400, fmt("/f requested offset overflows size_t: %zdk", offsetkib));
         handler.f(std::move(req), inm64, requested_len, offsetkib*1024, reqbufdata);
     }else if(req->function == "l"){
         server_stats.l_requests++;
@@ -652,6 +659,9 @@ req::parse_and_handle(req::up req) try {
         // The query is Len;Name;
         uint64_t lenkib;
         auto first_semiidx = svscan(req->query, &lenkib);
+        if(lenkib > max_reply_size/1024)
+            httpthrow(400, fmt("/x requested length too large: %zdk > %zd", lenkib, max_reply_size));
+        auto requested_len = lenkib*1024;
         // The name extends to the next semicolon.  The name may not contain semicolon.
         if( first_semiidx >= req->query.size() || req->query[first_semiidx] != ';' )
             httpthrow(400, "no semicolon after Len");
@@ -667,7 +677,7 @@ req::parse_and_handle(req::up req) try {
             httpthrow(400, "failed to uridecode xattr name");
         std::string xname = malloced_name;
         ::free((void*)malloced_name);
-        handler.x(std::move(req), lenkib*1024, std::move(xname));
+        handler.x(std::move(req), requested_len, std::move(xname));
     }else if(req->function == "n"){
         server_stats.n_requests++;
         handler.n(std::move(req));

@@ -21,6 +21,9 @@ struct exportd_handler: public fs123p7::handler_base{
     void s(fs123p7::req::up) override;
     void n(fs123p7::req::up) override;
     void x(fs123p7::req::up, size_t len, std::string name) override;
+#if 0 // FOR TESTING ONLY (See corresponding #if in exportd_handler.cpp)
+    void p(fs123p7::req::up, uint64_t inm64, std::istream& in) override;
+#endif
     void logger(const char* remote, fs123p7::method_e method, const char* uri, int status, size_t length, const char* date) override;
     secret_manager* get_secret_manager() override;
 

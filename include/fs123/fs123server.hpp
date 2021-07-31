@@ -237,6 +237,7 @@
 #include "fs123/secret_manager.hpp"
 #include "fs123/content_codec.hpp"
 #include "fs123/acfd.hpp"
+#include <core123/strutils.hpp>
 #include <core123/uchar_span.hpp>
 #include <core123/str_view.hpp>
 #include <core123/opt.hpp>
@@ -287,7 +288,7 @@ struct req{
     // reqs are neither copy-able nor move-able.  The constructor is
     // private, so the only way they are constructed is with make_up
     // which returns a unique_ptr.  They stay where they were
-    // constructed until they're destroyed.  These restrictions allows
+    // constructed until they're destroyed.  These restrictions allow
     // us to check in the destructor for whether one of the 'reply'
     // members has been called, and if not, to call exception_reply.
     req(req&&) = delete;
@@ -298,6 +299,18 @@ struct req{
         return std::unique_ptr<req>(new req(evreq, _server, _arm));
     }
     enum method_e method;
+    // max_reply_size says how much space are we willing to
+    // allocate for a reply.  Anything larger is rejected.  If it's a
+    // request, e.g.,
+    //    GET .../fs123/7/3/f/foo?1000000,0
+    // the client gets a 400.  If the handler calls p_reply, n_reply,
+    // x_reply, etc. with an excessively long 'body', it's a server-error
+    // and the client gets a 500.
+    //
+    // Note that Linux kernel never requests more than 128k at a time.
+    // We've experimented with increasing Fs123Chunk, but it's never
+    // been advantageous.  So we make max_reply_size a bit more than 1MB.
+    static const size_t max_reply_size = 1025 * 1024;
     // N.B.  The str_view members will typically "point" into data
     // that's owned by the evhr evhttp_request.  They are guaranteed
     // to remain valid until the one of the XXX_reply functions is
@@ -393,6 +406,11 @@ private:
     void allocate_pbuf(size_t sz){
         if(blob)
             throw std::logic_error("allocate_pbuf called twice.  Definitely a logic error");
+        // unreasonable sizes *should* have been caught higher up in
+        // the library code.  If we get here, something is misbehaving
+        // (perhaps in the caller-supplied handler).
+        if(sz > max_reply_size)
+            throw std::runtime_error(core123::fmt("allocate_pbuf too large: %zd > %zd", sz, max_reply_size));
         blob = core123::uchar_blob(secretbox_leadersz + sz + secretbox_padding);
         buf = core123::padded_uchar_span(blob, secretbox_leadersz, 0);
     }
