@@ -340,6 +340,13 @@ server::setup_async_mechanism(struct event_base *eb) {
     return arm;
 }
 
+bool /*private*/
+req::may_use_secrets() const {
+    // we *may* use secrets if we have a secret_manager and if we're
+    // not working with a /p.  See comments in fs123server.hpp.
+    return svr.the_secret_manager && function != "p";
+}
+
 void /*private*/
 req::maybe_call_logger(int status) {
     if(!evhr)
@@ -430,7 +437,7 @@ server::set_signal_handlers() {
 // is called because ETag needs to fold in the secretid (not(!) the secret).
 std::string /* private */
 req::maybe_encode_content(){
-    if(!svr.the_secret_manager || function == "p")
+    if(!may_use_secrets())
         return {};
     if(accept_encoding != content_codec::CE_FS123_SECRETBOX){
         httpthrow(406, "Request must specify Accept-encoding: fs123-secretbox");
@@ -528,8 +535,7 @@ req::parse_and_handle(req::up req) try {
         req->path_info = "";
         req->function = upath_sv.substr(nextoff);
     }
-    if(svr.the_secret_manager &&
-       req->function != "p" &&
+    if(req->may_use_secrets() &&
        req->accept_encoding != content_codec::CE_FS123_SECRETBOX)
         httpthrow(406, "Request must specify Accept-encoding: fs123-secretbox");
 
@@ -561,7 +567,7 @@ req::parse_and_handle(req::up req) try {
         DIAG(_fs123server, "/e request converted to:  query: " << req->query << ", function: " << req->function << ", path_info: " << req->path_info);
     }else{
         // not /e-ncrypted.  Are we willing to look at it?
-        if(svr.the_secret_manager && req->function != "p" && !svr.gopts->accept_plaintext_requests)
+        if(req->may_use_secrets() && !svr.gopts->accept_plaintext_requests)
             httpthrow(406, "Requests must be encrypted and authenticated");
         // [?QUERY]
         const char *q = evhttp_uri_get_query(uri);

@@ -140,6 +140,22 @@
 // get_secret_manager() must remain valid for the lifetime of the
 // server.
 
+// In general, if a the secret_manager is non-NULL, then encryption is
+// *required*.  I.e., only encrypted requests will be accepted and
+// only encrypted replies will be sent.  Unencrypted requests and
+// requests that do not have an 'Accept-encoding' header that permits
+// a reply with Content-encoding:fs123-secrebox will be rejected with
+// a 406 Not Acceptable.  This rule DOES NOT apply to /p requests.
+// I.e., the server library takes a hands-off approach to /p requests.
+// Unencrypted /p requests are permitted and replies are never
+// re-encoded by the library, even if encryption were otherwise
+// permitted.
+//
+// This rule is also relaxed by setting the server options:
+//   --accept-plaintext-requests
+// which allows plaintext (i.e., int /e/<ncrypted>) URLs even
+// when the secret_manager is non-NULL.
+
 // Short-circuiting HEAD requests is up to the handler.  I.e., the
 // handler *may* look at the req::method field, and call f_reply,
 // d_reply or p_reply with empty data arguments.  Even if the handler
@@ -399,6 +415,7 @@ private:
     async_reply_mechanism *arm;
     bool replied;
     bool synchronous_reply = false;
+    bool may_use_secrets() const;
     void common_reply200(const std::string& cc, uint64_t etag64 = 0, const char *fs123_errno="0");
     void log_and_send_destructively(int status);  // N.B.  *this is unusable after this!
     void maybe_call_logger(int status);
