@@ -58,16 +58,6 @@
 
 namespace core123{
 
-class raii_ctr{
-    std::atomic<int>& c;
-    const int incr;
-public:
-    raii_ctr(std::atomic<int>& _c, int _incr=1) :
-        c(_c), incr(_incr)
-    { c += incr; }
-    ~raii_ctr(){ c -= incr; }
-};
-
 template <typename T>
 class elastic_threadpool{
     using workunit_t = std::packaged_task<T()>;
@@ -77,34 +67,45 @@ class elastic_threadpool{
     }
 
     bool too_many_threads(){
-        // N.B.  at the point that too_many_threads is called, the
-        // calling thread has incremented both nthreads and nidle.
-        // So both of them are guaranteed to be >= 1.
-        return (nthreads() > nthreadmax) || (nidle() > nidlemax);
+        return (nthreads() > nthreadmax) || (nidle() >= nidlemax);
     }
 
     void start_thread() try {
         std::thread([this]() {
-                        ++nth;
-                        ++nidl;
-                        try{
-                            workunit_t wu;
-                            while(!too_many_threads() && workq.dequeue(wu)){
-                                raii_ctr decr_idle(nidl, -1);
-                                wu();
-                            }
+                        // Avoid anything that can throw here...  If
+                        // we throw betwen work.dequeue() and wu(),
+                        // then wu's future's get() will throw a
+                        // broken promise
+                        //
+                        // The only exceptions thrown by wu() itself are future_errors if:
+                        // - the stored task has already been invoked.
+                        // - wu has no shared state.
+                        // Since both "can't happen", don't bother with try/catch.  If
+                        // they actually happen, we'll study the corefile.
+                        nth.fetch_add(1);
+                        workunit_t wu;
+                        while(!too_many_threads()){
+                            // surround dequeue with an increment/decremented idle counter.
+                            // I.e., record that this_thread is idle while it's waiting for dequeue.
+                            nidl.fetch_add(1);
+                            bool dequeued = workq.dequeue(wu);
+                            nidl.fetch_sub(1);
+                            // If dequeue returned false, we must be
+                            // shutting down the threadpool.  Break.
+                            if(!dequeued)
+                                break;
+                            wu();
                         }
-                        catch(std::exception&e) {complain(e, "Ignoring unexpected exception thrown from elastic_threadpool thread");}
-                        catch(...) {complain("elastic_threadpool threw ...  This is *very* unexpected!  Ignoring."); }
                         // N.B.  The idiomatic way to do this is with notify_all_at_thread_exit,
                         // but that appears to be broken/misdesigned.  See:
                         // https://stackoverflow.com/questions/59130819/tsan-complaints-with-notify-all-at-thread-exit
                         // https://cplusplus.github.io/LWG/issue3343
-                        // So instead of using raii_ctr, we decrement the counters and call
-                        // cv.notify_all ourselves *with the lock held*.
+                        // FWIW, the LWG has a "proposed resolution" from the 2020-02 meeting, but libstdc++
+                        // still has the old behavior in July 2021 (gcc-11).
+                        //
+                        // So instead we decrement nth and call cv.notify_all ourselves *with the lock held*.
                         std::unique_lock<std::mutex> lk(m);
-                        --nidl;
-                        --nth;
+                        nth.fetch_sub(1);
                         cv.notify_all();
                     }).detach();
     }catch(std::exception& e){

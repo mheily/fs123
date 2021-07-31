@@ -32,7 +32,7 @@ public:
 
 int main(int, char**){
     std::vector<std::future<int>> results;
-    elastic_threadpool<int> tp(10, 2);
+    elastic_threadpool<int> tp(10, 1);
 
     // Just for informational purposes - how big is each of the entries
     // in the elastic_threadpool's pcq?
@@ -40,25 +40,35 @@ int main(int, char**){
     std::cout << "sizeof(elastic_threadpool<double>'s packaged_task) " << sizeof(std::packaged_task<double()>) << "\n";
     std::cout << "sizeof(elastic_threadpool<array<int, 64>>'s packaged_task) " << sizeof(std::packaged_task<std::array<int, 64>()>) << "\n";
 
+    static const int NLOOP=200;
     auto cp = getenv("UT_THREADPOOL_DIVISOR");
     auto divisor = cp ? atoi(cp) : 5;
-    for(int i=0; i<20; ++i){
-        // Note that we're pushing 40 tasks.  20 of them return their lambda parameter.
-        // And 20 of them return 10*std_atomic_counter++ (unless the counter is divisible
+    for(int i=0; i<NLOOP; ++i){
+        // Note that we're pushing 2*NLOOP tasks.  NLOOP of them return their lambda parameter.
+        // And NLOOP of them return 10*std_atomic_counter++ (unless the counter is divisible
         // by 5, in which case they throw!
         results.push_back( tp.submit( [=](){ return i; }) );
 	auto f = Foo(divisor);
         results.push_back(tp.submit(f));
     }
+    int slept = 0;
     while(tp.backlog()){
         ::sleep(1);
+        if(slept++ >= 10){
+            std::cerr << "Threadpool not clearing backlog.  Abort!" << std::endl;
+            abort();
+        }
     }
+    int nr = 0;
     for( auto& r : results ){
         try{
-            std::cout << r.get() << "\n";
+            std::cout << nr << " " << r.get() << "\n";
         }catch(std::runtime_error& e){
-            std::cout << "exception delivered by r.get: " << e.what() << "\n";
+            std::cout << nr << " exception delivered by r.get: " << e.what() << "\n";
         }
+        // Note:  we intentionally DO NOT catch future_error.  If we get one,
+        // study the core dump.
+        nr++;
     }
     std::cout << "outer thread: " << std::this_thread::get_id() << "\n";
 
@@ -66,13 +76,18 @@ int main(int, char**){
     // The standard says that ~future is  non-blocking, unless it came from
     // std::async.  And our futures don't come from std::async, so we should
     // be ok...
-    for(int i=0; i<20; ++i){
+    for(int i=0; i<NLOOP; ++i){
         tp.submit( [=](){ return i; });
 	auto f = Foo(divisor);
         tp.submit(f);
     }
+    slept=0;
     while(tp.backlog()){
         ::sleep(1);
+        if(slept++ > 10){
+            std::cout << "Threadpool not clearing backlog.  Abort!" << std::endl;
+            abort();
+        }
     }
     tp.shutdown();
     results.clear();
@@ -113,6 +128,8 @@ int main(int, char**){
     cv.notify_all();
     for(int i=0; i<N; ++i){
         sum += results[i].get();
+        // Note:  we intentionally DO NOT catch future_error.  If we get one,
+        // study the core dump.
     }
     elapsed = t.elapsed();
     std::cout << "sum = " << sum << "\n";
