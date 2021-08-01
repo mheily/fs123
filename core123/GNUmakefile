@@ -132,8 +132,11 @@ endif
 shunit_tests:=ut_configparser
 
 unit_tests.out:=$(addsuffix .out, $(unit_tests) $(shunit_tests))
+# the unit tests typically run for only a few seconds.  Run them
+# under 'timeout' so if they hang, we get a positive confirmation
+# that something is wrong.  2 minutes should be *plenty* of time.
 ut_%.out : ut_%
-	./$< > $@.tmp && mv $@.tmp $@
+	timeout 2m ./$< > $@.tmp && mv $@.tmp $@
 
 ut_diagtime_flood.out: ut_diagtime_flood
 	DIAG_OPTS=flood ./$< > $@.tmp && mv $@.tmp $@
