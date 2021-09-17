@@ -111,6 +111,8 @@ auto _namecache = diag_name("namecache");
 auto _periodic = diag_name("periodic");
 auto _init = diag_name("init");
 auto _shutdown = diag_name("shutdown");
+auto _validator = diag_name("validator");
+auto _proto73 = diag_name("proto73");
 // A (possibly out-of-date) list of other diag_names elsewhere in the code:
 //
 // Subsystems:
@@ -171,14 +173,8 @@ size_t Fs123Chunk;
 std::string baseurl;
 static_assert(sizeof(fuse_ino_t) == sizeof(uint64_t), "fuse_ino_t must be 64 bits");
 std::unique_ptr<expiring_cache<fuse_ino_t, std::string>> linkmap;
-struct attrcache_value_t{
-    std::string content;
-    uint64_t estale_cookie;
-    attrcache_value_t() : content{}, estale_cookie{}{}
-    attrcache_value_t(const std::string& _content, uint64_t _esc):
-        content(_content), estale_cookie(_esc)
-    {}
-};
+
+
 std::unique_ptr<expiring_cache<fuse_ino_t, attrcache_value_t, clk123_t>> attrcache;
 bool privileged_server;
 bool support_xattr;
@@ -214,7 +210,6 @@ std::unique_ptr<volatiles_t> volatiles;
 std::unique_ptr<std::thread> subprocess;
 
 std::string sharedkeydir_name;
-acfd sharedkeydir_fd;
 unsigned sharedkeydir_refresh;
 std::string encoding_keyid_file;
 std::unique_ptr<secret_manager> secret_mgr;
@@ -389,13 +384,10 @@ bool cookie_mismatch(fuse_ino_t ino, uint64_t estale_cookie){
 // I.e., we won't contact the backend for a refresh until the ttl_or_stale
 // expires, which is good for latency and bandwidth, but bad for
 // freshness.
-auto ttl_or_stale(const reply123& r){
-    if(!r.valid())
-        throw se(EINVAL, "ttl_or_stale called with invalid reply123");
-    auto ttl = r.ttl();
-    using ttl_t = decltype(ttl);
-    if(ttl>= ttl_t::zero())
-        return ttl;
+auto ttl_or_stale(const clk123_t::time_point& expires,  const clk123_t::duration& stale_while_revalidate){
+    auto now = clk123_t::now();
+    if(expires >= now)
+        return expires - now;
     // r is stale.  We might be in the stale_while_revalidate window,
     // or we might be in the (potentially much longer) stale_if_error
     // window.  If we're in the swr window it should be the case that
@@ -403,15 +395,15 @@ auto ttl_or_stale(const reply123& r){
     // to continue using the stale data until the window expires.  So
     // any ttl between 0 and the end of the stale-while-revalidate
     // window is "legal".
-    ttl_t staleness = -ttl; // positive
-    ttl_t tt_too_stale = r.stale_while_revalidate - staleness;
+    //
     // On the other hand, we *should* use the refreshed data when it
     // becomes available, which argues for returning a short duration.
     // So let's give ourselves the time till the window closes,
     // clipped from above by 1 second and clipped from below by zero
     // because we don't want to explore the kernel's reaction to a
     // negatve ttl.
-    return clip(ttl_t::zero(), tt_too_stale, ttl_t(std::chrono::seconds(1)));
+    using dur_t = clk123_t::duration;
+    return clip(dur_t::zero(), (expires + stale_while_revalidate) - now, dur_t(std::chrono::seconds(1)));
 }
 
 // delay_manager - construct one of these before starting a series of
@@ -582,42 +574,46 @@ void rethrow_to_abandon_retry(std::exception& e, const req123& req, const reply1
 // outages and unreliable servers) will be retried starting at
 // 100msec, exponentially backing off to 1sec, and then for one second
 // until the RetryTimeout is reached.
-bool retrying_berefresh(const req123& req, reply123* reply){
+auto retrying_berefresh(const req123& req){
     delay_manager<> dm(volatiles->retry_timeout, volatiles->retry_initial_millis, volatiles->retry_saturate);
+    reply123 reply;
     while(1)
         try{
-            return be->refresh(req, reply);  
+            be->refresh(req, &reply);
+            return reply;
         }catch(std::exception &e){
-            rethrow_to_abandon_retry(e, req, *reply, dm);
+            rethrow_to_abandon_retry(e, req, reply, dm);
             if(!dm.delay())
                 std::throw_with_nested(std::runtime_error("retrying_berefresh: retry_timeout reached.  no more retries for urlstem=" + req.urlstem));
         }
+    // notreached
 }
 
-bool berefresh_decode(const req123& req, reply123* reply){
-    bool ret = retrying_berefresh(req, reply);
-    switch(reply->content_encoding){
+decoded_reply beget_decode(const req123& req){
+    // FIXME?  This feels like it belongs in the decoded_reply constructor.
+    // It more-or-less *is* the decoded_reply constructor.
+    // But then  the decoded_reply constructor would have to know about
+    // secret_mgr.  Is that better than this??
+    reply123 reply = retrying_berefresh(req);
+    switch(reply.content_encoding){
     case content_codec::CE_IDENT:
         if(!accept_plaintext_replies)
-            throw se(EIO, "server replied in plaintext but client has Fs123AcceptPlaintexReplies is false");
-        break;
-    case content_codec::CE_FS123_SECRETBOX:
-        if(secret_mgr){
-            auto sp = content_codec::decode(reply->content_encoding, as_uchar_span(reply->content), *secret_mgr); // might throw, trashes content
-            // FIXME: If reply->content were a span, we'd just put it on
-            // the lhs of the assignment above and we'd be done.  But
-            // since it's a string, we're obliged to make a new one and
-            // copy the decoded span into it.
-            reply->content = std::string(as_str_view(sp));
-            reply->content_encoding = content_codec::CE_IDENT;
-        }else{
-            throw se(EIO, "reply is encoded with secretbox, but there's no secret manager");
+            throw se(EIO, "server replied in plaintext but client option Fs123AcceptPlaintextReplies is false");
+        {
+            auto rc = std::move(reply.content);
+            return {std::move(reply), std::move(rc), req.urlstem};
         }
-        break;
-    default:
-        throw se(EIO, "Unrecognized content-encoding");
+    case content_codec::CE_FS123_SECRETBOX:
+        if(!secret_mgr)
+            throw se(EIO, "reply is encoded with secretbox, but there's no secret manager");
+        auto sp = content_codec::decode(reply.content_encoding, as_uchar_span(reply.content), *secret_mgr); // might throw, trashes content
+        // FIXME: If reply.content were a span, we'd just put it on
+        // the lhs of the assignment above and we'd be done.  But
+        // since it's a string, we're obliged to make a new one and
+        // copy the decoded span into it.
+        return {std::move(reply), std::string(as_str_view(sp)), req.urlstem};
     }
-    return ret;
+    throw se(EIO, "Unrecognized content-encoding");
 }
 
 // fullname - slightly tricky because pino might be the ino of the
@@ -635,39 +631,6 @@ std::string fullname(fuse_ino_t pino, str_view lastcomponent){
 uint64_t attrcache_key(fuse_ino_t pino, str_view lastcomponent){
     return threeroe(lastcomponent, pino).hash64();
 }
-
-// The content of an /a/ reply  (protocol 7.1) is:
-//    <struct stat>  '\n', <validator>
-
-// This is a horrible API!  It's also not cheap to parse struct stats
-// over and over.  But rather than optimize prematurely we'll assess
-// the cost with some counters.
-
-// sometimes we just want the struct stat
-struct stat
-stat_from_a_reply(const std::string& sv) try{
-    stats.stat_scans++;
-    struct stat ret;
-    svscan(sv, &ret); // don't use svto because there's probably trailing non-whitespace, i.e., the estale_cookie.
-    return ret;
-}catch(std::exception&){
-    std::throw_with_nested(std::runtime_error("stat_from_a_reply(" + std::string(sv) + "\n"));
- }
-
-// sometimes we just want the validator (see below, outside the anonymous namespace)
-
-// and sometimes we want both
-auto
-pair_from_a_reply(const std::string& sv) try {
-    std::pair<struct stat, uint64_t> ret;
-    stats.stat_scans++;
-    auto off = svscan(sv, &ret.first, 0);
-    stats.validator_scans++;
-    svscan(sv, &ret.second, off);
-    return ret;
-}catch(std::exception&){
-    std::throw_with_nested(std::runtime_error("pair_from_a_reply(" + std::string(sv) + "\n"));
- }
 
 void encrypt_request(req123& req){
     if(encrypt_requests){
@@ -700,22 +663,24 @@ void beflush(fuse_ino_t pino, str_view lastcomponent){
     if(encrypt_requests)
         encrypt_request(req);
     reply123 unused;
-    berefresh_decode(req, &unused);
+    // no need for retry or decode logic.  Just send the
+    // no_cache request upstream.
+    be->refresh(req, &unused);
 }
 
-// berefresh - common code for begetXXX.  Calls berefresh_decode, and
+// beget - common code for begetXXX.  Calls beget_decode, and
 // optionally checks for staleness mismatch.  If there's a mismatch,
 // tries again with req.no_cache = true, and if there's still a
 // mismatch, invalidate the entry in the kernel, call beflush to
 // flush/replace the attributes in the attrcache and web caches, and
 // throw an ESTALE.
-void berefresh(fuse_ino_t ino, req123& req, reply123* reply, bool check_cookie){
+decoded_reply beget(fuse_ino_t ino, req123& req, bool check_cookie){
     if(encrypt_requests)
         encrypt_request(req);
-    berefresh_decode(req, reply);
-    if(!(reply->eno==0 && check_cookie && cookie_mismatch(ino, reply->estale_cookie)))
+    auto reply = beget_decode(req);
+    if(!(reply.eno==0 && check_cookie && cookie_mismatch(ino, reply.estale_cookie())))
         // We return from here the vast majority of  the time!
-        return;
+        return reply;
 
     // Either we weren't caching to begin with, or we got a cookie
     // mismatch with the cache in play.  Try again without caching:
@@ -723,8 +688,8 @@ void berefresh(fuse_ino_t ino, req123& req, reply123* reply, bool check_cookie){
     stats.estale_retries++;
     req123 ncreq = req;
     ncreq.no_cache = true;
-    berefresh_decode(ncreq, reply);
-    if(reply->eno==0 && check_cookie && cookie_mismatch(ino, reply->estale_cookie)){
+    reply = beget_decode(ncreq);
+    if(reply.eno==0 && check_cookie && cookie_mismatch(ino, reply.estale_cookie())){
         // The estale cookie has changed, making the ino itself bogus.
         // Let's tell the kernel:
         //
@@ -746,45 +711,41 @@ void berefresh(fuse_ino_t ino, req123& req, reply123* reply, bool check_cookie){
         beflush(pino_name.first, pino_name.second);
         stats.estale_thrown++;
         throw se(ESTALE, "estale detected in befresh:  req.urlstem: " + req.urlstem
-                + " reply->estale_cookie: " + std::to_string(reply->estale_cookie));
+                 + " reply.estale_cookie: " + std::to_string(reply.estale_cookie()));
     }
+    return reply;
 }
 
 // The different variants of begetchunk are "necessary" because of the need
 // to accomodate unpredictable (possibly negative) values of
 // chunkstart and the begin flag necessary for readdir.
-reply123 begetchunk_dir(fuse_ino_t ino, bool begin, int64_t start){
-    reply123 ret;
+auto begetchunk_dir(fuse_ino_t ino, const std::string& start){
     std::string name = ino_to_fullname(ino);
-    req123 req = req123::dirreq(name, Fs123Chunk, begin, start);
-    berefresh(ino, req, &ret, true);
-    return ret;
+    req123 req = req123::dirreq(name, Fs123Chunk, start);
+    return beget(ino, req, true);
 }    
 
-reply123 begetchunk_file(fuse_ino_t ino, int64_t startkib, bool no_cache = false){
-    reply123 ret;
+auto begetchunk_file(fuse_ino_t ino, int64_t startkib, bool no_cache = false){
     std::string name = ino_to_fullname(ino);
     req123 req = req123::filereq(name, Fs123Chunk, startkib);
     req.no_cache = no_cache;
-    berefresh(ino, req, &ret, true);
-    return ret;
+    return beget(ino, req, true);
 }    
 
-reply123 begetattr(fuse_ino_t pino, str_view lc, fuse_ino_t ino, std::optional<int> max_stale, bool no_cache){
+begetattr_t begetattr(fuse_ino_t pino, str_view lc, fuse_ino_t ino, std::optional<int> max_stale, bool no_cache){
     auto key = attrcache_key(pino, lc);
     if(no_cache){
         attrcache->erase(key);
     }else{
         auto cached_reply = attrcache->lookup(key);
         if( !cached_reply.expired() ){
-            DIAGkey(_getattr, "attrcache hit: " << cached_reply.content << " ec: " << cached_reply.estale_cookie << " good_till: " << ins(cached_reply.good_till) << " (" << ins(until(cached_reply.good_till)) << ")\n");
             if( !cookie_mismatch(ino, cached_reply.estale_cookie) )
-                return {std::move(cached_reply.content), content_codec::CE_IDENT, cached_reply.estale_cookie, cached_reply.ttl()};
+                return cached_reply;
             // It's not clear how we get here.  But if we're here
             // the reply stored in the attrcache is for the same name, but
             // a different 'ino' than the one we're being asked about.
             // Delete the attrcache entry and fall through to refresh.
-            complain(LOG_NOTICE, "attrcache erased:  cookie mismatch in " + strfunargs("begetattr", pino, lc,  ino) + " cached.sb: " + cached_reply.content + " cached.estale_cookie: " + str(cached_reply.estale_cookie));
+            complain(LOG_NOTICE, "attrcache erased:  cookie mismatch in " + strfunargs("begetattr", pino, lc,  ino) + " cached.estale_cookie: " + str(cached_reply.estale_cookie));
             attrcache->erase(key);
         }
     }
@@ -798,55 +759,46 @@ reply123 begetattr(fuse_ino_t pino, str_view lc, fuse_ino_t ino, std::optional<i
     req123 req = req123::attrreq(name);
     req.max_stale = max_stale;
     req.no_cache = no_cache;
-    reply123 ret;
-    berefresh(ino, req, &ret, true);
-    if(ret.eno == 0){
-        DIAGfkey(_getattr, "/a reply with content: %s\n", ret.content.c_str());
-        // A subsequent request might be for max-stale=0.  Since the
-        // attrcache doesn't understand swr or max-stale, we can't put
-        // anything in the cache that's expired but within the swr
-        // window.  Therefore, use ret.ttl(), not ttl_or_stale(ret)
-        // for the insertion ttl!
-        //
-        // FIXME: the attrcache should "understand"
-        // stale-while-revalidate and max-stale.
-        auto ttl = ret.ttl();
-        if( ttl > decltype(ttl)::zero() ){
-            bool inserted = attrcache->insert(key, attrcache_value_t(ret.content, ret.estale_cookie), ttl);
-            DIAGfkey(_getattr, "attrcache->insert(pino=%ju, lastcomponent=%s, key=%ju, name=%s, estale_cookie=%ju ttl=%.6f):  %s\n",
-                     (uintmax_t)pino, std::string(lc).c_str(),
-                     (uintmax_t)key, name.c_str(), (uintmax_t)ret.estale_cookie, dur2dbl(ttl),
-                     inserted? "replaced" : "did not replace");
-        }else{
-            DIAGfkey(_getattr, "attrcache: did not insert stale attributes:  ttl: %.6f", dur2dbl(ttl));
-        }
+    decoded_reply dr = beget(ino, req, true);
+    // A subsequent request might be for max-stale=0.  Since the
+    // attrcache doesn't understand swr or max-stale, we can't put
+    // anything in the cache that's expired but within the swr window.
+    // Therefore, use dr.expires, not dr.stale_while_revalidate for
+    // the insertion time_point.
+    //
+    // FIXME: the attrcache should "understand" stale-while-revalidate
+    // and max-stale.
+    expiring<attrcache_value_t> eav{dr.expires, dr};
+    if(dr.eno == 0){
+        DIAGkey(_getattr||_validator, "/a reply with content: " <<  dr.content() << "\n");
+        bool inserted = attrcache->insert(key, eav);
+        DIAGfkey(_getattr, "attrcache->insert(pino=%ju, lastcomponent=%s, key=%ju, name=%s, estale_cookie=%ju ttl=%s):  %s\n",
+                 (uintmax_t)pino, std::string(lc).c_str(),
+                 (uintmax_t)key, name.c_str(), (uintmax_t)dr.estale_cookie(), str(dr.expires).c_str(),
+                 inserted? "replaced" : "did not replace");
+        DIAG(_validator && inserted, "attrcache->insert with validator = " << eav.validator);
     }
-    return ret;
+    return eav;
 }
 
-reply123 begetstatfs(fuse_ino_t ino) {
+auto begetstatfs(fuse_ino_t ino) {
     reply123 ret;
     std::string name = ino_to_fullname(ino);
     req123 req = req123::statfsreq(name);
-    berefresh(ino, req, &ret, false);
-    return ret;
-}
-
-reply123 begetlink(fuse_ino_t ino) {
-    reply123 ret;
-    std::string name = ino_to_fullname(ino);
-    req123 req = req123::linkreq(name);
-    berefresh(ino, req, &ret, false);
-    return ret;
+    return beget(ino, req, false);
 }    
 
-reply123 begetxattr(fuse_ino_t ino, const char *attrname, bool nosize){
-    reply123 ret;
+auto begetlink(fuse_ino_t ino) {
+    std::string name = ino_to_fullname(ino);
+    req123 req = req123::linkreq(name);
+    return beget(ino, req, false);
+}    
+
+auto begetxattr(fuse_ino_t ino, const char *attrname, bool nosize){
     std::string name = ino_to_fullname(ino);
     // TODO should we have an Fs123AttrMax rather than using Fs123Chunk?
     req123 req = req123::xattrreq(name, nosize ? 0 : Fs123Chunk, attrname);
-    berefresh(ino, req, &ret, false);
-    return ret;
+    return beget(ino, req, false);
 }
 
 // We much prefer to take external commands via the ioctl mechanism,
@@ -1078,17 +1030,17 @@ void fs123_init(void *, struct fuse_conn_info *conn_info) try {
     
     if(!sharedkeydir_name.empty()){
         encoding_keyid_file = envto<std::string>("Fs123EncodingKeyidFile", "encoding");
-        sharedkeydir_fd = sew::open(sharedkeydir_name.c_str(), O_DIRECTORY|O_RDONLY);
-        secret_mgr = std::make_unique<sharedkeydir>(sharedkeydir_fd, encoding_keyid_file, sharedkeydir_refresh);
+        acfd fd = sew::open(sharedkeydir_name.c_str(), O_DIRECTORY|O_RDONLY);
+        secret_mgr = std::make_unique<sharedkeydir>(std::move(fd), encoding_keyid_file, sharedkeydir_refresh);
     }
     // Default values for the various encryption options *assume* that
     // if secrets are available then we should use them wherever
     // possible to encrypt, decrypt and authenticate communication.
     // It's possible to *explicitly* lower security (e.g.,
-    // -oFs123EncryptRequests=false or
+    // -oFs123SendPlaintextRequests=true or
     // -oFs123AcceptPlaintextReplies=true), but the default is to be as
     // safe as possible, given the availability of a secret manager.
-    encrypt_requests = envto<bool>("Fs123EncryptRequests", bool(secret_mgr));
+    encrypt_requests = !envto<bool>("Fs123SendPlaintextRequests", !bool(secret_mgr));
     // Do we want another option?  Or is it sufficient that we accept secretbox replies
     // if and only if we have a secret manager
     bool accept_secretbox_replies = bool(secret_mgr);
@@ -1097,9 +1049,16 @@ void fs123_init(void *, struct fuse_conn_info *conn_info) try {
 
     // fail early on impossible configurations:
     if(!secret_mgr && encrypt_requests)
-        throw se(EINVAL, "Misconfiguration:  Cannot EncryptRequests without a Sharedkeydir");
+        throw se(EINVAL, "Misconfiguration:  Cannot encrypt requests without a Sharedkeydir");
     if(!accept_secretbox_replies && !accept_plaintext_replies)
         throw se(EINVAL, "Misconfiguration:  Neither secretbox nor plaintext replies are accepted");
+    // Encrypting requests and accepting plaintext replies is not
+    // logically impossible, but it seems like a bad idea.  Also, note
+    // that the original request will be included in 7.3 replies, so
+    // if the client wants to keep requests confidential, it had
+    // better insist on encrypted replies as well.
+    if(encrypt_requests && accept_plaintext_replies)
+        throw se(EINVAL, "Unsupported configuration:  client may not make encrypted requests and also accept plaintext replies");
     
     std::string accepted_encodings;
     if(accept_secretbox_replies && !accept_plaintext_replies)
@@ -1107,12 +1066,12 @@ void fs123_init(void *, struct fuse_conn_info *conn_info) try {
     else if(accept_secretbox_replies)
         accepted_encodings = "fs123-secretbox";
     
-    proto_minor = envto<int>("Fs123ProtoMinor", fs123_protocol_minor_default);
-    if(proto_minor < fs123_protocol_minor_min)
+    backend123::proto_minor = envto<int>("Fs123ProtoMinor", backend123::proto_minor_default);
+    if(backend123::proto_minor < fs123_protocol_minor_min)
         throw se(EINVAL, fmt("Fs123ProtoMinor is too small.  It must be at least %d", fs123_protocol_minor_min));
-    else if(proto_minor < fs123_protocol_minor_max)
-        complain(LOG_NOTICE, "Using backward-compatible protocol_minor=%d", proto_minor);
-    else if(proto_minor > fs123_protocol_minor_max)
+    else if(backend123::proto_minor < fs123_protocol_minor_max)
+        complain(LOG_NOTICE, "Using backward-compatible protocol_minor=%d", backend123::proto_minor);
+    else if(backend123::proto_minor > fs123_protocol_minor_max)
         throw se(EINVAL, fmt("Fs123ProtoMinor too large.  Maximum value: %d", fs123_protocol_minor_max));
 
     aicache = std::make_unique<addrinfo_cache>();
@@ -1311,7 +1270,7 @@ void fs123_lookup(fuse_req_t req, fuse_ino_t ino, const char *name) try
         return;
     auto reply = begetattr(pino, name, 0, {}, false);
     struct fuse_entry_param e = {};
-    double ttl = dur2dbl(ttl_or_stale(reply));
+    double ttl = dur2dbl(ttl_or_stale(reply.good_till, reply.stale_while_revalidate));
     e.attr_timeout = no_kernel_attr_caching ? 0. : ttl;
     if( reply.eno == ENOENT ){
         // setting e.ino = 0 tells the kernel to cache the negative
@@ -1329,25 +1288,32 @@ void fs123_lookup(fuse_req_t req, fuse_ino_t ino, const char *name) try
         return reply_err(req, reply.eno);
     }
     e.ino = genino(reply.estale_cookie, pino, name);
+    DIAGf(_estale, "lookup(%ju, name=%s) calls genino(%ju, %ju, %s) -> %ju",
+          (uintmax_t)pino, name,
+          (uintmax_t)reply.estale_cookie, (uintmax_t)pino, name,
+          (uintmax_t)e.ino);
     e.entry_timeout = no_kernel_dentry_caching ? 0. : ttl;
-    uint64_t validator;
-    std::tie(e.attr, validator) = pair_from_a_reply(reply.content);
+    e.attr = reply.sb;
     if( !privileged_server && S_ISDIR(e.attr.st_mode) && !(e.attr.st_mode&S_IXOTH) ){
         complain(LOG_WARNING, "pino=%ju name=%s is a directory with the 'other' execute bit unset.  Attempts to look inside this directory will fail with EACCES (Permission denied)", (uintmax_t)pino, name);
     }
     massage_attributes(&e.attr, e.ino);
-    ino_remember(pino, name, e.ino, validator);
+    ino_remember(pino, name, e.ino, reply.validator);
+    DIAGkey(_llops, "lookup(" << req << ") -> stat: " << e.attr << " entry_timeout: " << e.entry_timeout << " attr_timeout: " << e.attr_timeout  <<"\n");
     reply_entry(req, &e);
  } CATCH_ERRS
 
 struct fh_state{
-    // Only used by opendir/readdir!
-    mutable std::mutex mtx;
-    std::string contents;
-    int64_t chunk_next_offset;
-    bool eof;
+     // Only used by opendir/readdir!
+     mutable std::mutex mtx;
+     std::string contents;
+     size_t contents_first_byte_offset;
+     std::vector<std::pair<size_t, std::string>> offsets;
+     bool eof;
 
-    fh_state() : contents{}, chunk_next_offset{0}, eof{false} {}
+     fh_state() : contents{}, contents_first_byte_offset{}, offsets{}, eof{false} {
+         offsets.push_back(std::make_pair(size_t(0), std::string{}));
+     }
  };
 // We use a shared_ptr<fh_state> to avoid any chance that the fh_state
 // (or anything within it, e.g., the mtx) goes out-of-scope while we're
@@ -1376,11 +1342,10 @@ void fs123_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) tr
         DIAGfkey(_getattr, "getattr reply_err req=%p r.eno=%d\n", req, reply.eno);
         return reply_err(req, reply.eno);
     }
-    struct stat sb = stat_from_a_reply(reply.content);
-    massage_attributes(&sb, ino);
-    double tosd = no_kernel_attr_caching? 0.0 : dur2dbl(ttl_or_stale(reply));
-    DIAGkey(_getattr,  "reply_attr(" << req <<  ", " << ino << ") -> ttl: " << tosd << " attrs: " << sb << "\n");
-    reply_attr(req, &sb, tosd);
+    massage_attributes(&reply.sb, ino);
+    double tosd = no_kernel_attr_caching? 0.0 : dur2dbl(ttl_or_stale(reply.good_till, reply.stale_while_revalidate));
+    DIAGkey(_getattr,  "getattr(" << req <<  ", " << ino << ") -> ttl: " << tosd << " attrs: " << reply.sb << "\n");
+    reply_attr(req, &reply.sb, tosd);
  } CATCH_ERRS
 
 void fs123_opendir(fuse_req_t req, fuse_ino_t  ino, struct fuse_file_info *fi) try {
@@ -1411,6 +1376,22 @@ size_t fuse_add_direntry_sv(fuse_req_t req, char *buf, size_t bufsz, str_view na
 void fs123_readdir(fuse_req_t req, fuse_ino_t ino, 
                       size_t size, off_t off, struct fuse_file_info *fi) try
 {
+    // WARNING - this code is a minefield of potential off-by-one errors:
+    // - the special-inodes start at 2 and end at 5.
+    // - They're only present in the root (ino=1).
+    // - The d_off value in a dirent is the offset of the *next* entry
+    //   (not this entry).
+    // - We are juggling two fundamentally different flavors of
+    //   offset: byte-offsets into the contents returned from the
+    //   fs123 server, and string-valued 'start' offsets, which we use
+    //   to ask the server for the next chunk of 'content'.
+    // - the byte-offset and next-start in the fhstate->offsets[]
+    //   vector are for the next chunk.
+    // - the server usually gives us an EOF indicator when it
+    //   sends us the last chunk of data.  But it's possible that
+    //   it doesn't even know, and we don't get the EOF until we
+    //   get an empty chunk.
+    // BE CAREFUL
     stats.readdirs++;
     update_idle_timer();
     DIAGfkey(_llops, "readdir(%p, ino=%ju, size=%zu, off=%jd, fi=%p, fi->fh=%p)\n",
@@ -1423,39 +1404,108 @@ void fs123_readdir(fuse_req_t req, fuse_ino_t ino,
     // All readdirs on the same open fd are serialized.
     std::unique_lock<std::mutex> lk{fhstate->mtx};
 #if 0
+    // BIT-ROT!  Don't flip the #if condition without FIXING THIS
     // See docs/Notes.readdir.  You can't win.
     // #if 1 is the "rewinddir syncs the directory, seekdir(d, 0) might invalidate previous telldirs" solution
     // #if 0 is the "rewinddir doesn't sync the directory, seekdir(d,0) doesn't invalidate previous telldirs" solution.
     if(off == 0){
         fhstate->contents.resize(0);
-        fhstate->chunk_next_offset = 0;
+        fhstate->offsets.resize(1); // keep the (0,0) entry
         fhstate->eof = false;
     }
 #endif
 
-    size_t nextoff = size_t(off);
-    if(nextoff == fhstate->contents.size() && !fhstate->eof){
-	auto reply = begetchunk_dir(ino, fhstate->contents.empty(), fhstate->chunk_next_offset);
-        if( reply.eno )
-            return reply_err(req, reply.eno);
-        // anti-Postel's law ... be strict in what we accept too
-        if( reply.chunk_next_meta == reply123::CNO_MISSING )
-            throw se(EIO, fmt("fs123_readdir(%s) reply missing " HHNO " with chunk-next-offset", ino_to_fullname(ino).c_str()));
-        fhstate->contents += reply.content;
-        fhstate->chunk_next_offset = reply.chunk_next_offset;
-	// since we do not assume anything about what offset means, we
-	// do  not use it to setsize, so getattr or header stat info
-	// must have meaningful st_size
-        fhstate->eof = (reply.chunk_next_meta == reply123::CNO_EOF);
-    }
+    // I've never seen a size other than 4096 (on Linux).  Calling
+    // getdents64 makes no difference.  IIUC, it's set in the kernel
+    // (fs/dir.c or fs/readdir.c), where fuse_read_args_fill is called
+    // with size=PAGE_SIZE.  This has been true since 2.6.14, and
+    // through at least 5.14.  
+    //
+    // This has been discussed:
+    //
+    // https://bugzilla.redhat.com/show_bug.cgi?id=1478411
+    // https://github.com/gluster/glusterfs/issues/910
+    // A gluster developer prepared a patch, but it doesn't seem
+    // to have made it into the kernel.
+    // https://github.com/nh2/linux/compare/v4.9-fuse-large-readdir
+    // https://github.com/nh2/linux/commit/bedbf74a1a6d2958e719ed77a6a4f0baac79deab
+    //
+    // So until somebody pushes something like that upstream, we're
+    // stuck handling FUSE callbacks for every 4k of getdents data.
+    // This is unfortunate, but not a disaster, because we make http
+    // requests for 128k chunks, even though the kernel only asks us
+    // for 4k-at-a-time.
     std::array<char, 4096> buf;
     size_t bufsz = std::min(size, buf.size());
     size_t used = 0;
+    size_t nextoff = safe_integral_cast<size_t>(off);
+
+    size_t must_begetchunk = 0;
+    if(ino==1){
+        // handle 'special' inos first.  It's tricky no matter where we do it.
+        while(nextoff < max_special_ino - 1){
+            ++nextoff;
+            fuse_ino_t sino = nextoff+1;
+            struct stat stbuf = shared_getattr_special_ino(sino, nullptr);
+            auto needed = fuse_add_direntry(req, buf.data()+used, bufsz-used, special_ino_to_fullname(sino), &stbuf, nextoff);
+            if( needed > bufsz-used )
+                return reply_buf(req, buf.data(), used);  // extremely unlikely!
+            used += needed;
+        }
+        fhstate->offsets[0].first = max_special_ino - 1;
+    }
+
+    if(nextoff > fhstate->offsets.back().first)
+        throw se(EINVAL, fmt("fs123_readdir:  offset (%zd) too large.  Largest valid offset: %zd",
+                             nextoff, fhstate->offsets.back().first));
+    if(nextoff == fhstate->offsets.back().first && fhstate->eof)
+        return reply_buf(req, nullptr, 0);  // At eof... Nothing more to see.
+    
+    if( nextoff < fhstate->contents_first_byte_offset ||
+        nextoff >= fhstate->contents_first_byte_offset + fhstate->contents.size()){
+        // find the first offset for which first >= nextoff 
+        must_begetchunk
+            = std::upper_bound(fhstate->offsets.begin(),
+                               fhstate->offsets.end(),
+                               nextoff,
+                               [](size_t nxo, const std::pair<size_t, std::string>& p){
+                                   return nxo < p.first;
+                               }) - fhstate->offsets.begin();
+        DIAGf(_readdir, "must_begetchunk = %zd", must_begetchunk);
+    }
+    if(must_begetchunk>0){
+        auto [byte_next_offset, chunk_next_start] = fhstate->offsets[must_begetchunk-1];
+	auto reply = begetchunk_dir(ino, chunk_next_start);
+        if( reply.eno )
+            return reply_err(req, reply.eno);
+        if(must_begetchunk == fhstate->offsets.size()){
+            DIAG(_readdir, str("offsets.push_back(", byte_next_offset+reply.content().size(), reply.chunk_next_start(), ")"));
+            auto cns = reply.chunk_next_start();
+            fhstate->offsets.push_back(std::make_pair(byte_next_offset + reply.content().size(),
+                                                      std::string(cns)));
+            fhstate->eof = (cns.empty());
+        }
+        // should there be an else here?  We're assuming that the
+        // reload of this chunk retrieves exactly the same contents as
+        // the original, so that entries are still at the same
+        // byte_offsets that they were the first time we scanned this
+        // content. If the contents has changed, we rely on the
+        // error-detection in the parse loop to catch any errors.  We
+        // might be a bit "safer" with some kind of checking here.
+        // But enough to matter?
+        //
+        // In actual practice, seekdir() (or lseek on a directory fd)
+        // is extremely rare.  I find no instances of anything in
+        // glibc-2.17 calling seekdir or telldir (of course, implements it several
+        // different ways).
+        fhstate->contents = reply.content();
+        fhstate->contents_first_byte_offset = byte_next_offset;
+        DIAG(_readdir, str("fhstate->contents_first_byte_offset:", fhstate->contents_first_byte_offset));
+    }
     std::string dir = ino_to_fullname(ino);
 
-    if(nextoff > fhstate->contents.size() + ((ino==1)?(max_special_ino-1):0))
-        throw se(EINVAL, fmt("readdir offset invalid.  It points past end of directory.  contents.size()=%zu, ino=%ju, max_special_ino=%zu, off=%zu",
-                                     fhstate->contents.size(), (uintmax_t)ino, max_special_ino, nextoff));
+    nextoff -= fhstate->contents_first_byte_offset; // nextoff is now an offset into fhstate->contents
+    DIAG(_readdir, str("nextoff: ", nextoff));
     str_view svin(fhstate->contents);
     if(nextoff < svin.size())
         nextoff = svscan(svin, nullptr, nextoff); // skip whitespace.  A reply that contains only whitespace implies EOF.
@@ -1542,27 +1592,16 @@ void fs123_readdir(fuse_req_t req, fuse_ino_t ino,
                 stats.fake_ino_dirents++; // should only see these if the server is configured with --fake_ino_dirents.
             stbuf.st_ino = genino(estale_cookie, ino, name) & st_ino_mask;
         }
-        auto needed = fuse_add_direntry_sv(req, buf.data()+used, bufsz-used, name, &stbuf, nextoff);
+        auto needed = fuse_add_direntry_sv(req, buf.data()+used, bufsz-used, name, &stbuf,
+                                           fhstate->contents_first_byte_offset + nextoff);
         // N.B.  If needed > bufsz-used, then fuse_add_direntry did nothing.
         if( needed > bufsz-used )
             break;
-        DIAGfkey(_readdir, "fuse_add_direntry(%ju) -> %s, nextoff = %ld used=%zu\n",
-                 (uintmax_t)ino, (dir + "/" + std::string(name)).c_str(), nextoff, used);
+        DIAGfkey(_readdir, "fuse_add_direntry(%ju) -> %s, d_off = %ld used=%zu\n",
+                 (uintmax_t)ino, std::string(name).c_str(), fhstate->contents_first_byte_offset + nextoff, used);
         used += needed;
     }
     
-    // deal with 'special' inos in the root.
-    if(ino==1 && fhstate->eof){
-        for(fuse_ino_t sino = 2+nextoff - svin.size(); sino <= max_special_ino; ++sino){
-            struct stat stbuf = shared_getattr_special_ino(sino, nullptr);
-            nextoff += 1;
-            auto needed = fuse_add_direntry(req, buf.data()+used, bufsz-used, special_ino_to_fullname(sino), &stbuf, nextoff);
-            if( needed > bufsz-used )
-                break;
-            used += needed;
-            DIAGfkey(_readdir, "fuse_add_direntry(%ju) -> %s, nextoff = %ld used=%zu\n",  (uintmax_t)ino, (dir + "/" + special_ino_to_fullname(sino)).c_str(), nextoff, used);
-        }
-    }
     // We could release the lock sooner but it would require thinking
     // carefully about how contents are stored - and it's not clear
     // anyone would ever benefit (who does multiple concurrent
@@ -1590,11 +1629,11 @@ void do_xattr(fuse_req_t req, fuse_ino_t ino, const char *name, size_t size) {
     if (reply.eno)
 	return reply_err(req, reply.eno);
     if (nosize) {
-	return reply_xattr(req, svto<size_t>(reply.content));
-    } else if (size < reply.content.size()) {
+	return reply_xattr(req, svto<size_t>(reply.content()));
+    } else if (size < reply.content().size()) {
 	return reply_err(req, ERANGE);
     }
-    return reply_buf(req, reply.content.c_str(), reply.content.size());
+    return reply_buf(req, reply.content());
 }
 
 #ifndef __APPLE__
@@ -1636,8 +1675,8 @@ void fs123_readlink(fuse_req_t req, fuse_ino_t ino) try
     auto reply = begetlink(ino);
     if(reply.eno)
         return reply_err(req, reply.eno);
-    linkmap->insert(ino, reply.content, ttl_or_stale(reply));
-    return reply_readlink(req, reply.content.c_str());
+    linkmap->insert(ino, std::string(reply.content()), ttl_or_stale(reply.expires, reply.stale_while_revalidate));
+    return reply_readlink(req, std::string(reply.content()).c_str());
  } CATCH_ERRS
 
 void fs123_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) try {
@@ -1719,7 +1758,7 @@ void fs123_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) try {
     // an "unnecessary" keep_cache=0 the very first time we open an
     // ino, but since there's nothing to keep, it's moot.  We could
     // avoid that by also comparing old_validator with zero.
-    auto new_validator = validator_from_a_reply(r);
+    auto new_validator = r.validator;
     uint64_t old_validator;
     try{
         old_validator = ino_update_validator(ino, new_validator);
@@ -1751,7 +1790,7 @@ void fs123_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) try {
 
     // If the reply has max-age==0 turn on direct_io to completely
     // avoid the openfilemap logic.
-    if(r.max_age().count() == 0)
+    if(!r.cacheable)
         fi->direct_io = true;
     if(!fi->direct_io){
         fi->fh = openfile_register(ino, r);
@@ -1767,10 +1806,15 @@ void fs123_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) try {
  } CATCH_ERRS
 
 std::pair<uint64_t, str_view>
-content_parse_7_2(str_view whole){
-     str_view monotonic_validator;
-     auto next = svscan_netstring(whole, &monotonic_validator, 0);
-     return {svto<uint64_t>(monotonic_validator), whole.substr(next)};
+f_validator_and_content(const decoded_reply& dr){
+    if(backend123::proto_minor >= 3){
+        return {dr.validator(), dr.content()};
+    }else{
+        str_view whole = dr.content();
+        str_view monotonic_validator;
+        auto next = svscan_netstring(whole, &monotonic_validator, 0);
+        return {svto<uint64_t>(monotonic_validator), whole.substr(next)};
+    }
 }
 
 void fs123_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, struct fuse_file_info *fi) try {
@@ -1812,7 +1856,7 @@ void fs123_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, struct f
         return reply_err(req, reply0.eno);
     str_view content;
     uint64_t rvalidator;
-    std::tie(rvalidator, content) = content_parse_7_2(reply0.content);
+    std::tie(rvalidator, content) = f_validator_and_content(reply0);
     if(rvalidator < ino_validator){
         stats.reread_no_cache++;
         // More decisions...
@@ -1838,7 +1882,7 @@ void fs123_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, struct f
         reply0 = begetchunk_file(ino, start0kib, true/*no_cache*/);
         if(reply0.eno)
             return reply_err(req, reply0.eno);
-        std::tie(rvalidator, content) = content_parse_7_2(reply0.content);
+        std::tie(rvalidator, content) = f_validator_and_content(reply0);
         if(rvalidator < ino_validator){
             stats.non_monotonic_validators++;
             throw se(ESTALE, "fs123_read:  monotonic_validator in the past even after no_cache retrieval fullname: " + name + " r_validator: " + std::to_string(rvalidator) + " ino_validator: " + std::to_string(ino_validator));
@@ -1878,14 +1922,14 @@ void fs123_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, struct f
     auto reply1 = begetchunk_file(ino, start1kib);
     if(reply1.eno)
         return  reply_err(req, reply1.eno);
-    std::tie(rvalidator, content) = content_parse_7_2(reply1.content);
+    std::tie(rvalidator, content) = f_validator_and_content(reply1);
     DIAGf(_read, "first-try begetchunk_file1: trsum(content)=%s", threeroe(content).hexdigest().c_str());
     if(rvalidator < ino_validator){
         stats.reread_no_cache++;
         reply1 = begetchunk_file(ino, start1kib, true/*no_cache*/);
         if(reply1.eno)
             return reply_err(req, reply1.eno);
-        std::tie(rvalidator, content) = content_parse_7_2(reply1.content);
+        std::tie(rvalidator, content) = f_validator_and_content(reply1);
         DIAGf(_read, "re-try begetchunk_file1: trsum(content)=%s", threeroe(content).hexdigest().c_str());
         if(rvalidator < ino_validator){
             stats.non_monotonic_validators++;
@@ -1923,7 +1967,8 @@ void fs123_statfs(fuse_req_t req, fuse_ino_t ino) try {
          // an error and hope somebody notices the complaints.
          return reply_err(req, reply.eno);
     }
-    auto svb = svto<struct statvfs>(reply.content);
+    DIAGkey(_llops, "statvfs content: " << reply.content() << "\n");
+    auto svb = svto<struct statvfs>(reply.content());
     return reply_statfs(req, &svb);
 }CATCH_ERRS
 
@@ -2267,43 +2312,6 @@ void fs123_getlk(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info*, struct 
     return reply_err(req, ENOLCK);
  }CATCH_ERRS;
 
-} // namespace <anon>
-
-// A couple of symbols that  we use elsewhere in the code:
-// declared in mount.fs123p7.hpp
-//
-
-/*static*/ const unsigned
-volatiles_t::hw_concurrency = std::thread::hardware_concurrency();
-
-reply123 begetattr(fuse_ino_t ino, std::optional<int> max_stale, bool no_cache){
-    auto pino_name = ino_to_pino_name(ino);
-    return begetattr(pino_name.first, pino_name.second, ino, max_stale, no_cache);
-}
-
-uint64_t
-validator_from_a_reply(const reply123& r) try {
-    if(r.eno)
-        return 0;
-    if(r.content_encoding != content_codec::CE_IDENT)
-        throw se(EINVAL, "reply should have been decoded before calling validator_from_a_reply");
-    // Use the fact that there's a newline between the sb and the
-    // validator to avoid fully parsing the sb.
-    auto newlineidx = r.content.find('\n');
-    stats.validator_scans++;
-    return svto<uint64_t>(r.content, newlineidx);
- }catch(std::exception&){
-    std::throw_with_nested(std::runtime_error("validator_from_a_reply"));
- }
-
-// begetserver_stats is in the global namespace so we can call it from special_ino.cpp
-reply123 begetserver_stats(fuse_ino_t ino){
-    reply123 ret;
-    req123 req = req123::statsreq();
-    berefresh(ino, req, &ret, false);
-    return ret;
-}
-
 std::ostream& vm_report(std::ostream& os){
     std::string ret;
     std::ostringstream procpidstatus;
@@ -2332,6 +2340,131 @@ std::ostream& vm_report(std::ostream& os){
             }
     }
     return os;
+}
+
+} // namespace <anon>
+
+// Some extern symbols needed in other .cpp files that are declared in
+// app_mount.hpp
+
+/*static*/ const unsigned
+volatiles_t::hw_concurrency = std::thread::hardware_concurrency();
+
+begetattr_t begetattr(fuse_ino_t ino, std::optional<int> max_stale, bool no_cache){
+    auto pino_name = ino_to_pino_name(ino);
+    return begetattr(pino_name.first, pino_name.second, ino, max_stale, no_cache);
+}
+
+decoded_reply::decoded_reply(reply123&& from, std::string&& plaintext, const std::string& urlstem) :
+    eno{0}, // default to 0 if there's no FS123_ERRNO key
+    _plaintext{std::move(plaintext)},
+    _content{}
+{
+    if(!from.valid())
+        throw std::runtime_error("can't construct decoded_reply from an invalid reply123");
+    expires = from.expires;
+    stale_while_revalidate = from.stale_while_revalidate;
+    cacheable = (from.max_age().count()>0);
+    core123::str_view kvinput;
+    if(backend123::proto_minor >= 3){
+        kvinput = _plaintext;
+    }else{
+        // Jump through hoops to cons up some text that looks like the
+        // metadata in a proto7.3 reply.
+        kvinputstring7_2 =
+            netstring(FS123_COOKIE) + ' ' + netstring(std::to_string(from.estale_cookie72)) + '\n';
+        switch(from.chunk_next_meta72){
+        case reply123::CNO_EOF:
+            kvinputstring7_2 += netstring(FS123_NEXTSTART) + " 0:,\n";
+            break;
+        case reply123::CNO_NOT_EOF:
+            kvinputstring7_2 += netstring(FS123_NEXTSTART) + ' ' + netstring(std::to_string(from.chunk_next_offset72)) + '\n';
+            break;
+        case reply123::CNO_MISSING:
+            break;
+        default:
+            throw std::runtime_error("decoded_reply::decoded_reply: unexpected value of from.chunk_next_meta");
+        }
+            
+        kvinput = kvinputstring7_2;
+        // Don't make another copy of the plaintext.  Just put a
+        // str_view pointing to it directly into _content.
+        _content = str_view(_plaintext);
+        eno = from.eno72;
+    }
+    // kvinput is zero or more:
+    //  key-netstring<space>value-netstring<newline>
+    // read them two-at-a-time until we get to the
+    // end of the plaintext
+    size_t next = 0;
+    while(next < kvinput.size()) try {
+        str_view k, v;
+        DIAG(_proto73, "look for key: " << kvinput.substr(next) << "\n");
+        next = svscan_netstring<false>(kvinput, &k, next);
+        if(kvinput.at(next++) != ' ')
+            throw std::runtime_error("decoded_reply(reply123&&): expected space between key and value");
+        DIAG(_proto73, "look for value: " << kvinput.substr(next) << "\n");
+        next = svscan_netstring<false>(kvinput, &v, next);
+        if(kvinput.at(next++) != '\n')
+            throw std::runtime_error("decoded_reply(reply123&&): expected newline after value");
+        // Somebody always wants the errno.  Let's just parse it now rather
+        // than wait for someone to need it.
+        if(k == FS123_ERRNO){
+            eno = svto<int>(v);
+        }else if(k == FS123_CONTENT){
+            _content = v;
+        }else if(k == FS123_REQUEST){
+            // if we're dealing with a confused server or cache, or an MitM, bail
+            // out now, before doing anything with the data.  If there's a bad record
+            // in a cache, it would be nice to flush it - but it's hard to know how.
+            // Suggest manual intervention.
+            if(v != backend123::add_sigil_version({}) + urlstem){
+                stats.req123_mismatch++;
+                // We'd like to throw.  But bona fide 302s change the
+                // url to the right of the /fs123/ sigil, so we can't
+                // really act on the mismatch...
+                //throw std::runtime_error("reply's 'request' (" + std::string(v) + ") doesn't mach request's urlstem (" + backend123::add_sigil_version({}) + '/' + urlstem + ").  Confused server?  MitM?  Do we have a poisoned cache that needs manual intervention?");
+            }
+        }else{
+            auto [notused, inserted] = kvmap.emplace(k, v);
+            unused(notused);
+            if(!inserted)
+                throw std::runtime_error("decoded_reply(reply123&&): repeated key in plaintext of reply");
+        }
+        // Are any keys *required*?  E.g., FS123_REQUEST?  If so, we should make sure they're all present.
+    }catch(std::exception& e){
+        std::throw_with_nested(std::runtime_error("could not parse content as 7.3-style key/value pairs.  Are we sending 7.3 requests to a 7.2 server?"));
+    }
+}
+
+attrcache_value_t::attrcache_value_t(const decoded_reply& dr)  try :
+    eno(dr.eno), estale_cookie{},
+    stale_while_revalidate(dr.stale_while_revalidate),
+    cacheable(dr.cacheable)
+{
+    if(dr.eno == 0){
+        auto off = core123::svscan(dr.content(), &sb, 0);
+        // Don't try to extract the estale_cookie unless we're sure it's
+        // supposed to be there.
+        if(S_ISREG(sb.st_mode) || S_ISDIR(sb.st_mode))
+            estale_cookie = dr.estale_cookie();
+        // In 7.3, the validator is a bona fide key.  Prior to
+        // that, we extracted it from the content /a and /f
+        // replies.
+        if(backend123::proto_minor >= 3)
+            validator = dr.validator();
+        else
+            core123::svscan(dr.content(), &validator, off);
+        DIAG(_validator, "attrcache_value_t constructed with validator=" << validator);
+    }
+}catch(std::exception& e){
+        std::throw_with_nested(std::runtime_error("attrcache_value_t:attrcache_value_t: dr.eno=" + std::to_string(dr.eno) + " dr.content()=" + std::string(dr.content())));
+ }
+
+// begetserver_stats is in the global namespace so we can call it from special_ino.cpp
+decoded_reply begetserver_stats(fuse_ino_t ino){
+    req123 req = req123::statsreq();
+    return beget(ino, req, false);
 }
 
 std::ostream& report_stats(std::ostream& os){
@@ -2409,7 +2542,7 @@ std::ostream& report_config(std::ostream& os){
        << "Fs123Sharedkeydir: " << sharedkeydir_name << "\n"
        << "Fs123SharedkeydirRefresh: " << sharedkeydir_refresh << "\n"
        << "Fs123EncodingKeyidFile: " << encoding_keyid_file << "\n"
-       << "Fs123EncryptRequests: " << encrypt_requests << "\n"
+       << "Fs123SendPlaintextRequests: " << !encrypt_requests << "\n"
        << "Fs123AcceptPlaintextReplies: " << accept_plaintext_replies << "\n"
        << "Fs123MulticastTimestampSkew: " << volatiles->multicast_timestamp_skew << "\n"
        << "Fs123RetryTimeout: " << volatiles->retry_timeout << "\n"
@@ -2565,7 +2698,7 @@ try {
                                     "Fs123Sharedkeydir=",
                                     "Fs123SharedkeydirRefresh=",
                                     "Fs123EncodingKeyidFile=",
-                                    "Fs123EncryptRequests=",
+                                    "Fs123SendPlaintextRequests=",
                                     "Fs123AcceptPlaintextReplies=",
                                     "Fs123IgnoreEstaleMismatch=",
 				    "Fs123SupportXattr=",

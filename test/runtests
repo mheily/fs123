@@ -119,7 +119,8 @@ $CPEXE $OBJDIR/fs123p7 $clientexe
 # should run multiple tests.  So Fs123ProtoMinor should be an argument and we
 # should run different several different clients... Until then, test the
 # "most important" one (whatever that means).
-ProtoMinor=2
+: ${PROTO_MINOR:=3}
+export PROTO_MINOR  # tell the t-xxx scripts as well!
 clientopts="-f"
 clientopts+=" -oFs123CommandPipe=${MTroot}/cmdpipe"
 clientopts+=" -oFs123SignalFile=${MTroot}/fs123.sig"
@@ -129,7 +130,7 @@ clientopts+=" -oFs123RetryTimeout=10"
 clientopts+=" -oFs123BuggyAutomountWorkaround=1"
 clientopts+=" -oFs123CacheDir=$MTroot/cachedir,Fs123CacheMaxMBytes=16,Fs123CacheMaxFiles=32,Fs123EvictPeriodMinutes=1"
 clientopts+=" -oFs123SupportXattr=true"
-clientopts+=" -oFs123ProtoMinor=$ProtoMinor"
+clientopts+=" -oFs123ProtoMinor=$PROTO_MINOR"
 # It's important to test with encryption turned on, but it's much harder
 # to make sense of the logs when debugging.  To turn off encryption, comment
 # out the next two lines (and see below for lines to comment out in the server config)

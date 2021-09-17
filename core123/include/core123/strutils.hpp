@@ -282,7 +282,6 @@ template <typename STR> // either string or string_view
 std::pair<std::optional<STR>, STR>
 rsplit1(const STR& s, typename STR::value_type delim){
     auto where = s.rfind(delim);
-    std::optional<STR> rest;
     if(where != std::string::npos)
         return {s.substr(0, where), s.substr(where+1)};
     else
@@ -378,6 +377,10 @@ auto
 strbe(const COLL& coll){
     return strbe(" ", coll);
 }
+
+inline std::string
+vfmt(const char *fmt, va_list va)
+    __attribute__ ((__format__ (__printf__, 1, 0)));
 
 inline std::string
 vfmt(const char *fmt, va_list va){

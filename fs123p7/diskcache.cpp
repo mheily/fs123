@@ -14,6 +14,7 @@
 #include <core123/stats.hpp>
 #include <core123/fdstream.hpp>
 #include <core123/uuid.hpp>
+#include <core123/intuitive_compare.hpp>
 #include <random>
 #include <vector>
 #include <utility>
@@ -42,31 +43,6 @@ inline double log_16(double x){
  refcounted_scoped_nanotimer_ctrl deserialize_nanotimer_ctrl(stats.dc_deserialize_inuse_sec);
  refcounted_scoped_nanotimer_ctrl update_nanotimer_ctrl(stats.dc_update_inuse_sec);
  refcounted_scoped_nanotimer_ctrl serdes_nanotimer_ctrl(stats.dc_serdes_inuse_sec);
-
-bool should_serialize(const reply123& r){
-    switch(r.eno){
-    case 0:
-    case ENOENT:
-#ifndef __APPLE__
-        // FIXME!  DANGER!! - ENODATA is numerically different on Linux
-        // and OSX.
-        // Linux:  ENODATA=61    EPFNOSUPPORT=96
-        //   OSX:  ENODATA=96    ECONNREFUSED=61
-        // ECONNREFUSED should definitely *not* be serialized, and
-        // on OSX, we can't distinguish between a server-generated
-        // ENODATA and a client-generated ECONNREFUSED, so we punt.
-        // It may require a protocol change to fix this.
-    case ENODATA:
-#endif
-        // should serialization if there's no
-        // error, or if the errno is non-transient and is something
-        // that we'd like to negatively cache (e.g., there is no-such
-        // entry, there are no such xattrs, etc).
-        return true;
-    }
-    // don't serialize anything else.
-    return false;
-}
 
 void
 create_uuid_symlink(int rootfd){
@@ -760,7 +736,7 @@ diskcache::deserialize_no_unlink(int rootfd, const std::string& path,
     // extra I/O only to apply a stronger sanity-check that is
     // unlikely to ever fail.
     size_t bytes_not_counting_url = reply123_pod_length + sizeof(content_len) + content_len + 2*sizeof(int32_t);
-    if((size_t)sb.st_size < bytes_not_counting_url)
+    if(comparable(sb.st_size) < comparable(bytes_not_counting_url))
         throw se(EINVAL, fmt("diskcache::deserialize: st_size=%jd, should be >= %zu\n",
 			     (intmax_t)sb.st_size, bytes_not_counting_url));
     ret->content.resize(content_len);
@@ -847,13 +823,11 @@ diskcache::serialize(const reply123& r, const std::string& path, const std::stri
     refcounted_scoped_nanotimer _rt(serialize_nanotimer_ctrl);
     refcounted_scoped_nanotimer _rtx(serdes_nanotimer_ctrl);
     static std::atomic<long long> rofs_defer_till{0};
-    if(!should_serialize(r))
-       return;
     if( rofs_defer_till > _t.started_at() ){
         stats.dc_serialize_deferred_rofs++;
         return;
     }
-    DIAGkey(_diskcache, "diskcache::serialize(" << path << " now=" << ins(std::chrono::system_clock::now()) << " eno=" << r.eno << " fresh=" << r.fresh() << " expires=" << ins(r.expires) << " etag64=" << r.etag64 << ")\n");
+    DIAGkey(_diskcache, "diskcache::serialize(" << path << " now=" << ins(std::chrono::system_clock::now()) << " fresh=" << r.fresh() << " expires=" << ins(r.expires) << " etag64=" << r.etag64 << ")\n");
     // A single diskcache object is used concurrently by many threads.
     // Take care that they don't step on one anothers rngs.
     static std::atomic<int> seed(0); // give a different seed to every thread.
@@ -887,6 +861,20 @@ diskcache::serialize(const reply123& r, const std::string& path, const std::stri
             // flow to "attach" one request to another already-in-progress
             // one. Let's count before we start writing new code...
             stats.dc_serialize_eexist_wasted_bytes += r.content.size();
+            // Despite our best efforts (see the catch below), it's
+            // possible that pathnew exists and there's nobody around
+            // to rename it.  (E.g., kill -9 or system crash).  If we
+            // don't do something, we'll never be able to cache this
+            // object again.  It would be reasonable to remove it.  But
+            // let's just print a warning until we understand why
+            // this is happening.
+            struct stat sb;
+            if( ::fstatat(rootfd_, pathnew.c_str(), &sb, 0) == 0){
+                // disregard errors.  ENOENT is actually pretty likely.
+                if(sb.st_ctime < ::time(nullptr) - 30)
+                    complain(LOG_WARNING, "diskcache::serialize:  " + pathnew + " exists and is more than 30 seconds old.  This file may need to be manually removed!  Did something crash?");
+            }
+                
             break;
         case EROFS:
             // ext family filesystems will remount themselves read-only after a certain

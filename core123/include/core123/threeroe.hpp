@@ -311,13 +311,17 @@ public:
     //  Return a reference to this, to
     //  facilitate chaining, e.g., h.update('he').update('llo')
     threeroe& update(const void *data, size_t n){
-        const char *cdata = (const char *)data;
-        const char *end = cdata+n;
-        cdata = catchup(cdata, end);
-        if( end-cdata >= ptrdiff_t(sizeof(deferred)) )
-            cdata = bulk(cdata, end);
-        defer(cdata, end);
-        len += n;
+        // __builtin_expect, despite being non-standard, appears to be more
+        // portable (gcc7, clang8, icc) than the C++20 [[likely]] attribute
+        if(__builtin_expect(n>0, true)){ // Avoid UB on perfectly benign update(nullptr, 0)
+            const char *cdata = (const char *)data;
+            const char *end = cdata+n;
+            cdata = catchup(cdata, end);
+            if( end-cdata >= ptrdiff_t(sizeof(deferred)) )
+                cdata = bulk(cdata, end);
+            defer(cdata, end);
+            len += n;
+        }
         return *this;
     }
 

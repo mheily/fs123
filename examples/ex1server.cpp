@@ -47,15 +47,15 @@ struct example_handler: public fs123p7::handler_base{
         }
         a_reply(move(reqp), sb, validator, estale_cookie, cc);
     }
-    void d(fs123p7::req::up reqp, uint64_t /*inm64*/, bool /*begin*/, int64_t /*offset*/) override{
+    void d(fs123p7::req::up reqp, uint64_t /*inm64*/, std::string /*start*/) override{
         DIAGf(_ex1server, "d(%s)", string(reqp->path_info).c_str());
         if(reqp->path_info != "")
             return errno_reply(move(reqp), ENOTDIR, cc);
-        reqp->add_dirent("hello", 1, DT_REG, estale_cookie);
-        reqp->add_dirent("hi", 2, DT_LNK, estale_cookie);
-        reqp->add_dirent(".", 3, DT_DIR, estale_cookie);
-        reqp->add_dirent("..",  4, DT_DIR, estale_cookie);
-        d_reply(move(reqp), true, validator, estale_cookie, cc);
+        reqp->add_dirent("hello", DT_REG, estale_cookie);
+        reqp->add_dirent("hi", DT_LNK, estale_cookie);
+        reqp->add_dirent(".", DT_DIR, estale_cookie);
+        reqp->add_dirent("..",  DT_DIR, estale_cookie);
+        d_reply(move(reqp), {}, validator, estale_cookie, cc);
     }
     void f(fs123p7::req::up reqp, uint64_t inm64, size_t len, uint64_t offset, void* buf) override{
         DIAGf(_ex1server, "f(%s)", string(reqp->path_info).c_str());

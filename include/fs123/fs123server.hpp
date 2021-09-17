@@ -36,13 +36,6 @@
 // another thread.  (See below for restrictions imposed by the
 // version of libevent).
 
-// Synchronous handlers are easier to write and reason about.  A
-// synchronous handler can be made asynchronous by wrapping it with
-// 'tp_handler' - a threadpool-based wrapper that farms out
-// synchronous handler invocations to an elastic_threadpool (see
-// core123/elasticthreadpool.hpp).  See bench/bench_main.cpp for
-// usage.
-
 // The errno_reply returns a "valid" errno to the client in a normal,
 // unexceptional, HTTP 200 reply.  E.g., ENOENT for an non-existent
 // directory entry.  On the other hand, req::exception_reply() sends a
@@ -131,30 +124,22 @@
 // side - it doesn't add many microseconds of formatting overhead to
 // every request.
 
-// The 'get_secret_manager' callback returns a secret_manager* (see
-// secret_manager.hpp).  It is called once by the server's constructor
-// and the result is saved.  If it returns a nullptr, the server is
-// unable to send or receive encrypted data.  If it is non-null, the
-// object pointed to will be used to obtain secrets for encrypting and
-// decrypting messages using the 'secretbox' protocol.  A non-null
-// get_secret_manager() must remain valid for the lifetime of the
-// server.
-
-// In general, if a the secret_manager is non-NULL, then encryption is
+// Shared-key encryption is enabled by the --sharedkeydir option.  In
+// general, if --sharedkeydir is specified, then encryption is
 // *required*.  I.e., only encrypted requests will be accepted and
 // only encrypted replies will be sent.  Unencrypted requests and
 // requests that do not have an 'Accept-encoding' header that permits
-// a reply with Content-encoding:fs123-secrebox will be rejected with
-// a 406 Not Acceptable.  This rule DOES NOT apply to /p requests.
-// I.e., the server library takes a hands-off approach to /p requests.
-// Unencrypted /p requests are permitted and replies are never
-// re-encoded by the library, even if encryption were otherwise
-// permitted.
+// a reply with Content-encoding:fs123-secretbox will be rejected with
+// a 406 Not Acceptable.  Note that the server library takes a
+// hands-off approach to /p requests, so this rule DOES NOT apply to
+// /p requests.  Unencrypted /p requests are permitted and replies are
+// never re-encoded by the library, even if --sharedkeydir is
+// specified.
 //
-// This rule is also relaxed by setting the server options:
+// This rule is also relaxed by setting the server option:
 //   --accept-plaintext-requests
 // which allows plaintext (i.e., int /e/<ncrypted>) URLs even
-// when the secret_manager is non-NULL.
+// when the --sharedkeydir is specified.
 
 // Short-circuiting HEAD requests is up to the handler.  I.e., the
 // handler *may* look at the req::method field, and call f_reply,
@@ -182,6 +167,27 @@
 //   boolean-valued member function: strictly_synchronous() that tells
 //   the server whether handlers are guaranteed to be synchronous.
 //
+//   Synchronous handlers are easier to write and reason about.  A
+//   synchronous handler can be made asynchronous by wrapping it with
+//   'tp_handler' - a threadpool-based wrapper that farms out
+//   synchronous handler invocations to an elastic_threadpool (see
+//   core123/elasticthreadpool.hpp).  Lifetimes of wrapped and
+//   wrapping objects are tricky in a way that suggests the API could
+//   be improved, but something like this should work:
+
+//    int threadpoolmax, threadpoolidle; // e.g., set by cmd-line --options
+//    ...
+//    my_handler_t my_handler(...);
+//    std::optional<fs123p7::tp_handler<my_handler_t>> tph;
+//    fs123p7::handler_base* handler_base_ptr = &my_handler;
+//    if(threadpoolmax){
+//        // Construct the tp_handler here, but don't
+//        // destroy it until the outer block closes.
+//        tph.emplace(gopts.threadpoolmax, gopts.threadpoolidle, my_handler);
+//        handler_base_ptr = &tph.value();
+//    }
+//    fs123p7::server server(sopts, *handler_base_ptr);
+
 //   ** NOTE - bugs in libevent through version 2.1.8 prevent the use
 //   of asynchronous handlers.  If libfs123 is compiled and linked
 //   with libevent-2.1.8 or earlier, the fs123::server constructor
@@ -250,9 +256,10 @@
 //   too many str_views.  The padded_buffer is distressingly
 //   complicated.
 
-#include "fs123/secret_manager.hpp"
+#include "fs123/sharedkeydir.hpp"
 #include "fs123/content_codec.hpp"
 #include "fs123/acfd.hpp"
+#include "fs123/httpheaders.hpp"
 #include <core123/strutils.hpp>
 #include <core123/uchar_span.hpp>
 #include <core123/str_view.hpp>
@@ -265,6 +272,7 @@
 #include <list>
 #include <cstdint>
 #include <memory>
+#include <utility>
 #include <optional>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
@@ -340,6 +348,8 @@ struct req{
     core123::str_view uri;
     // The prefix is the part before the /FUNCTION designator.
     core123::str_view prefix;  // e.g., /sel/ec/tor/fs123/7/2/
+    static constexpr int proto_major = fs123_protocol_major;
+    int proto_minor;
     core123::str_view function; // e.g., f (not e, even if the original uri is /e/ncrypted!)
     // path_info is the CGI terminology for the part of the URI that
     // follows the script's name. In fs123, path_info is the part of
@@ -357,8 +367,9 @@ struct req{
     //    prefix + function + path_info + (query->data()?"?":"") + query
 
     // Methods that may only be called from within a d() handler:
-    bool add_dirent(core123::str_view name, long offset, int type, uint64_t esc);
+    bool add_dirent(core123::str_view name, int type, uint64_t esc);
     bool add_dirent(const ::dirent& de, uint64_t esc);
+    size_t dirent_space_avail() const;
     // Method that may only be called from within a p() handler:
     void add_header(const std::string& name, const std::string& value);
 
@@ -376,8 +387,8 @@ struct req{
     friend void redirect_reply(up th, const std::string& location, const std::string& cc={}) { th->redirect_reply(location, cc); }
     friend void a_reply(up th, const struct stat& sb, uint64_t content_validator, uint64_t esc, const std::string& cc){
         th->a_reply(sb, content_validator, esc, cc); }
-    friend void d_reply(up th, bool at_eof, uint64_t etag64, uint64_t esc, const std::string& cc){
-        th->d_reply(at_eof, etag64, esc, cc); }
+    friend void d_reply(up th, const std::string& nextstart, uint64_t etag64, uint64_t esc, const std::string& cc){
+        th->d_reply(nextstart, etag64, esc, cc); }
     friend void f_reply(up th, size_t nbytes, uint64_t content_validator, uint64_t etag64, uint64_t esc, const std::string& cc){
         th->f_reply(nbytes, content_validator, etag64, esc, cc); }
     friend void l_reply(up th, const std::string& target, const std::string& cc){
@@ -401,10 +412,8 @@ private:
     const size_t secretbox_leadersz = sizeof(fs123_secretbox_header) + crypto_secretbox_MACBYTES;
 
     int16_t accept_encoding; // one of content_codec::CE_{IDENT,FS123_SECRETBOX,UNKNOWN}.  Should be an enum.
-    int proto_minor;
     evhttp_request* evhr;
     size_t requested_len; // so we don't exceed it when replying.  Only set in reqs for f() handlers.
-    long dir_lastoff;
     std::unique_ptr<char, decltype(std::free)*> decoded_path_up{nullptr, ::free}; // returned by evhttp_uridecode.  We must free.
     std::string decode64; // the result of base64-decode of the path *iff* the request was /e
     std::string envelope_sid; // the sid *iff* the request was a /e
@@ -415,21 +424,22 @@ private:
     async_reply_mechanism *arm;
     bool replied;
     bool synchronous_reply = false;
+    std::vector<std::pair<std::string, std::string>> kvpairs;
     bool may_use_secrets() const;
-    void common_reply200(const std::string& cc, uint64_t etag64 = 0, const char *fs123_errno="0");
+    void common_reply200(const std::string& cc, uint64_t etag64 = 0);
+    void encrypt_and_send200(const std::string& cc, uint64_t etag64);
     void log_and_send_destructively(int status);  // N.B.  *this is unusable after this!
     void maybe_call_logger(int status);
     std::string maybe_encode_content();
+    static const size_t final_netstring_bytes = 2; // ",\n" that closes the value of the content kv-pair
     void allocate_pbuf(size_t sz){
+        static const size_t fs123_max_headersz = 1024;
         if(blob)
             throw std::logic_error("allocate_pbuf called twice.  Definitely a logic error");
-        // unreasonable sizes *should* have been caught higher up in
-        // the library code.  If we get here, something is misbehaving
-        // (perhaps in the caller-supplied handler).
         if(sz > max_reply_size)
             throw std::runtime_error(core123::fmt("allocate_pbuf too large: %zd > %zd", sz, max_reply_size));
-        blob = core123::uchar_blob(secretbox_leadersz + sz + secretbox_padding);
-        buf = core123::padded_uchar_span(blob, secretbox_leadersz, 0);
+        blob = core123::uchar_blob(secretbox_leadersz + fs123_max_headersz + sz + secretbox_padding + final_netstring_bytes);
+        buf = core123::padded_uchar_span(blob, secretbox_leadersz + fs123_max_headersz, 0);
     }
     void copy_to_pbuf(core123::str_view s){
         allocate_pbuf(s.size());
@@ -437,14 +447,14 @@ private:
     }
     // How much space is "available" at the 'front' and 'back' of buffer - NOT counting
     // the space we pre-allocated for the secretbox leader and padding
-    size_t buf_avail_back() const {
-        if(buf.avail_back() < secretbox_padding)
-            throw std::out_of_range("req::buf_avail_back: negative available space");
-        return buf.avail_back() - secretbox_padding;
+    size_t buf_content_avail_back() const {
+        if(buf.avail_back() < secretbox_padding + final_netstring_bytes)
+            throw std::out_of_range("req::buf_content_avail_back: negative available space");
+        return buf.avail_back() - secretbox_padding - final_netstring_bytes;
     }
-    size_t buf_avail_front() const {
+    size_t buf_content_avail_front() const {
         if(buf.avail_front() < secretbox_leadersz)
-            throw std::out_of_range("req::buf_avail_front: negative available space");
+            throw std::out_of_range("req::buf_content_avail_front: negative available space");
         return buf.avail_front() - secretbox_leadersz;
     }
     void internal_exception(const std::exception& e);
@@ -455,7 +465,7 @@ private:
     void not_modified_reply(const std::string& cc);
     void redirect_reply(const std::string& location, const std::string& cc);
     void a_reply(const struct stat&, uint64_t content_validator, uint64_t esc, const std::string& cc);
-    void d_reply(bool at_eof, uint64_t etag64, uint64_t esc, const std::string& cc);
+    void d_reply(const std::string& nextstart, uint64_t etag64, uint64_t esc, const std::string& cc);
     void f_reply(size_t nbytes, uint64_t content_validator, uint64_t etag64, uint64_t esc, const std::string& cc);
     void l_reply(const std::string& target, const std::string& cc);
     void s_reply(const struct statvfs&, const std::string& cc);
@@ -467,7 +477,7 @@ private:
 struct handler_base{
     virtual bool strictly_synchronous() = 0;
     virtual void a(req::up) = 0;
-    virtual void d(req::up, uint64_t inm64, bool begin, int64_t offset) = 0;
+    virtual void d(req::up, uint64_t inm64, std::string /*start*/) = 0;
     virtual void f(req::up, uint64_t inm64, size_t len, uint64_t offset, void *buf) = 0;
     virtual void l(req::up) = 0;
     virtual void s(req::up req) = 0;
@@ -482,10 +492,6 @@ struct handler_base{
     }
     virtual void logger(const char* /*remote*/, method_e /*method*/, const char* /*uri*/, int /*status*/, size_t /*length*/, const char* /*date*/){
     }
-    virtual secret_manager* get_secret_manager(){
-        return nullptr;
-    }
-    
     virtual ~handler_base(){}
 };
               
@@ -505,9 +511,9 @@ public:
                       h.a(req::up(p));
                   });
     }
-    void d(req::up req, uint64_t inm64, bool begin, int64_t offset) override {
+    void d(req::up req, uint64_t inm64, std::string start) override {
         tp.submit([=, p=req.release()](){
-                      h.d(req::up(p), inm64, begin, offset);
+                      h.d(req::up(p), inm64, start);
                   });
     }
     void f(req::up req, uint64_t inm64, size_t len, uint64_t offset, void *buf) override {
@@ -545,17 +551,17 @@ public:
         // And in any case, we're already running in a thread in the pool.
         h.logger(remote, method, uri, status, length, date);
     }
-    secret_manager* get_secret_manager() override {
-        return h.get_secret_manager();
-    }
 };
 
 #define ALLOPTS \
+STD_OPTIONAL_OPTION(std::string, sharedkeydir, "path to directory containing shared secrets (pre-chroot!)"); \
+OPTION(std::string, encoding_keyid_file, "encoding", "name of file containing the encoding secret. (if relative, then with respect to sharedkeydir, otherwise with respect to chroot)"); \
+OPTION(uint64_t, sharedkeydir_refresh, 43200, "reread files in sharedkeydir after this many seconds"); \
 OPTION(bool, accept_plaintext_requests, false, "if true, then unencrypted requests are allowed, even when secretbox encryption is enabled");\
 OPTION(unsigned, nlisteners, 4, "run with this many listening processes");\
 OPTION(std::string, bindaddr, "127.0.0.1", "bind to this address");\
-OPTION(uint16_t, port, 0, "bind to this port.  If 0, an ephemeral port is chosen.  The port number in use is available via server::get_sockaddr_in.");\
-OPTION(double, exit_after_idle, "0", "If positive, the server stops after this many seconds of idle time"); \
+STD_OPTIONAL_OPTION(uint16_t, port, "bind to this port.  If unspecified, an ephemeral port is chosen.  The port number in use is available via server::get_sockaddr_in.");\
+STD_OPTIONAL_OPTION(double, exit_after_idle, "If specified, the server stops after this many seconds of idle time"); \
 /* max_http_headers_size should be enough for typical headers */       \
 OPTION(uint64_t, max_http_headers_size, 2000, "maximum bytes in incoming request HTTP headers");\
  /* max http_body_size can be small since fs123 has no incoming body */ \
@@ -604,13 +610,17 @@ OPTION(bool, async_reply_mechanism, false, "guarantee that evhttp_send_reply is 
 struct server_options {
 #define OPTION(type, name, default, desc)        \
     type name
+#define STD_OPTIONAL_OPTION(TYPE, NAME, DESC) std::optional<TYPE> NAME;
 ALLOPTS
 #undef OPTION
+#undef STD_OPTIONAL_OPTION
     server_options(core123::option_parser& op){
 #define OPTION(type, name, dflt, desc) \
         op.add_option(#name, core123::str(dflt), desc, core123::opt_setter(name))
+#define STD_OPTIONAL_OPTION(TYPE, NAME, DESC) op.add_option(#NAME, {}, DESC, core123::opt_setter(NAME))
 ALLOPTS
 #undef OPTION
+#undef STD_OPTIONAL_OPTION
 #undef ALLOPTS
     }
 };
@@ -636,7 +646,7 @@ private:
     decltype(core123::make_autocloser((evhttp*)nullptr, evhttp_free)) ehac{nullptr, ::evhttp_free};
     decltype(core123::make_autocloser((event*)nullptr, event_free)) donecheck_ev{nullptr, ::event_free};
     std::unique_ptr<async_reply_mechanism> armup;
-    secret_manager* the_secret_manager = nullptr;
+    std::optional<sharedkeydir> the_secret_manager;
     bool strictly_synchronous_handlers;
     fs123p7::handler_base& handler;
     struct evhttp_bound_socket* ehsock = nullptr;
@@ -667,8 +677,24 @@ private:
 } // namespace fs123p7
 
 #include <core123/stats.hpp>
+#define FS123_SERVER_STATISTICS \
+  STATISTIC(requests) \
+  STATISTIC(reply_bytes) \
+  STATISTIC(INM_requests) \
+  STATISTIC(a_requests) \
+  STATISTIC(f_requests) \
+  STATISTIC(d_requests) \
+  STATISTIC(l_requests) \
+  STATISTIC(x_requests) \
+  STATISTIC(s_requests) \
+  STATISTIC(n_requests) \
+  STATISTIC(p_requests) \
+  STATISTIC(reply_200s) \
+  STATISTIC(reply_304s) \
+  STATISTIC(reply_others)
 #define STATS_STRUCT_TYPENAME server_stats_t
-#define STATS_INCLUDE_FILENAME "server_statistic_names"
+#define STATS_MACRO_NAME FS123_SERVER_STATISTICS
 #include <core123/stats_struct_builder>
+#undef FS123_SERVER_STATISTICS
 extern server_stats_t server_stats;
 

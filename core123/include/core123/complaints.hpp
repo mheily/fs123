@@ -147,6 +147,7 @@ namespace core123{
 // friends of the new singleton class.
 struct complainer_t{
     friend void set_complaint_destination(const std::string&, int mode);
+    friend std::string get_complaint_destination();
     friend void reopen_complaint_destination();
     friend void set_complaint_max_hourly_rate(float rate);
     friend float get_complaint_max_hourly_rate();
@@ -338,6 +339,10 @@ inline void set_complaint_destination(const std::string& dest, int mode){
     the_complainer().logchan.open(dest, mode);
 }
 
+inline std::string get_complaint_destination(){
+    return the_complainer().logchan.opened_dest;
+}
+
 inline void reopen_complaint_destination(){
     the_complainer().logchan.reopen();
 }
@@ -445,6 +450,8 @@ inline void log_notice(const std::string& msg){
 // Now for the overloads that that take a printf-style format string
 // and a ... arglist.  They can be disabled with a #define.
 #if !defined(NO_CORE123_FORMATTED_COMPLAINTS)
+inline void vcomplain(int priority, const std::exception &e, const char *fmt, va_list ap)
+    __attribute__ ((__format__ (__printf__, 3, 0)));
 inline void vcomplain(int priority, const std::exception &e, const char *fmt, va_list ap) {
     auto& tc = the_complainer();
     if((priority&0x7) <= tc._complaint_level)
@@ -469,10 +476,14 @@ inline void complain(int priority, const std::exception& e, const char *fmt, ...
     va_end(args);
 }
 
+inline void vcomplain(const char *fmt, va_list ap)
+    __attribute__ ((__format__ (__printf__, 1, 0)));
 inline void vcomplain(const char *fmt, va_list ap){
     vcomplain(LOG_ERR, fmt, ap);
 }
 
+inline void vcomplain(const std::exception &e, const char *fmt, va_list ap)
+    __attribute__ ((__format__ (__printf__, 2, 0)));
 inline void vcomplain(const std::exception &e, const char *fmt, va_list ap) {
     vcomplain(LOG_ERR, e, fmt, ap);
 }

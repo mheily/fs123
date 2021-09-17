@@ -74,7 +74,9 @@ CFLAGS += $(OPT)
 CFLAGS += $(DASHG)
 LDFLAGS += -pthread
 
-GIT_DESCRIPTION?=$(shell cd $(top/); git describe --always --dirty || echo not-git)
+ifeq ($(origin GIT_DESCRIPTION), undefined)
+  GIT_DESCRIPTION:=$(shell cd $(top/); git describe --always --dirty 2>/dev/null || echo not-git)
+endif
 CXXFLAGS += -DGIT_DESCRIPTION=\"$(GIT_DESCRIPTION)\"
 
 serverlibs=-levent -levent_pthreads -lsodium
@@ -164,6 +166,8 @@ install : $(binaries) $(libs)
 
 # <autodepends from http://make.mad-scientist.net/papers/advanced-auto-dependency-generation>
 # Modified to work with CSRCS and CPPSRCS instead of just SRCS...
+# Also modified to add && touch $@ to the recipe because on MacOS
+# the .d file gets written after the .o file.  What could possibly go wrong?
 DEPDIR := .deps
 DEPFLAGS = -MT $@ -MMD -MP -MF $(DEPDIR)/$*.d
 
@@ -171,12 +175,12 @@ COMPILE.c = $(CC) $(DEPFLAGS) $(CFLAGS) $(CPPFLAGS) $(TARGET_ARCH) -c
 
 %.o : %.c
 %.o : %.c $(DEPDIR)/%.d | $(DEPDIR)
-	$(COMPILE.c) $(OUTPUT_OPTION) $<
+	$(COMPILE.c) $(OUTPUT_OPTION) $< && touch $@
 
 COMPILE.cpp = $(CXX) $(DEPFLAGS) $(CXXFLAGS) $(CPPFLAGS) $(TARGET_ARCH) -c
 %.o : %.cpp
 %.o : %.cpp $(DEPDIR)/%.d | $(DEPDIR)
-	$(COMPILE.cpp) $(OUTPUT_OPTION) $<
+	$(COMPILE.cpp) $(OUTPUT_OPTION) $< && touch $@
 
 $(DEPDIR): ; @mkdir -p $@
 

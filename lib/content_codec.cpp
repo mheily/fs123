@@ -11,9 +11,20 @@
 using namespace core123;
 
 namespace{
-#define STATS_INCLUDE_FILENAME "codec_statistic_names"
+#define CODEC_STATISTICS \
+  STATISTIC(secretbox_blocks_decrypted) \
+  STATISTIC(secretbox_bytes_decrypted) \
+  STATISTIC_NANOTIMER(secretbox_decrypt_sec) \
+  STATISTIC(secretbox_auth_failures) \
+  STATISTIC(secretbox_blocks_encrypted) \
+  STATISTIC(secretbox_bytes_encrypted) \
+  STATISTIC_NANOTIMER(secretbox_encrypt_sec) \
+  STATISTIC(secretbox_disappearing_secrets)
+
+#define STATS_MACRO_NAME CODEC_STATISTICS
 #define STATS_STRUCT_TYPENAME codec_stats_t
 #include <core123/stats_struct_builder>
+#undef CODEC_STATISTICS
 codec_stats_t stats;
     
 auto _secretbox = diag_name("secretbox");
@@ -67,7 +78,7 @@ content_codec::encoding_itos(int16_t encoding) /*static*/{
 // The fs123-secretbox format is modeled after rfc8188.  The "wire format"
 // is in the fs123_secretbox_header:
 //
-//   | nonce(24) | recordsz(4) | secretidlen(2)=0x2 | secretid(2) | ciphertext(recordsz) |
+//   | nonce(24) | recordsz(4) | secretidlen(1) | secretid(secretidlen) | ciphertext(recordsz) |
 //
 // The recordsz, secretidlen and secretid are in network byte order.
 core123::padded_uchar_span

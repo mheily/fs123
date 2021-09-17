@@ -107,11 +107,11 @@ struct pqrecord{
     // If the caller happens to know the current time, it can be
     // passed as the third argument.  Otherwise, we'll call
     // clk_t::now.
-    pqrecord(const reply123& _r, ofmap_t::iterator _miter, clk123_t::time_point now = clk123_t::now()):
-        expires(std::max(_r.expires, now + no_sooner_than)),
+    pqrecord(const begetattr_t& _r, ofmap_t::iterator _miter, clk123_t::time_point now = clk123_t::now()):
+        expires(std::max(_r.good_till, now + no_sooner_than)),
         miter(_miter)
     {
-        if(_r.expires < now)
+        if(_r.good_till < now)
             stats.of_pq_stale_ctors++;
     }
     // without a reply123 argument, the constructor sets 'expires' to
@@ -181,7 +181,7 @@ void scan(){
         // DANGER!  This is not RAII-protected.  DO NOT ALLOW AN
         // UNCAUGHT EXCEPTION TO SKIP THE CALL TO decrefcnt below!
         mr.refcnt++;
-        reply123 r;
+        begetattr_t r;
         lk.unlock();
         try{
             // get attributes that should not be stale, but may come from a cache.
@@ -189,14 +189,14 @@ void scan(){
             r = begetattr(ino, 0, false); 
             stats.of_getattrs++;
             DIAGfkey(_ofmap, "scan:  ino=%lu, newreply.expires at: %.6f (%.6f)\n",
-                     ino, tp2dbl(r.expires), tpuntildbl(r.expires));
+                     ino, tp2dbl(r.good_till), tpuntildbl(r.good_till));
         }catch(std::exception& e){
             complain(LOG_WARNING, e, "begetattr threw in openfilemap::scan.  Did an open file get moved out from under us? ino=%lu", ino);
             stats.of_throwing_getattrs++;
         }
         bool must_notify;
         if(r.eno == 0){
-            auto r_validator = validator_from_a_reply(r);
+            auto r_validator = r.validator;
             try{
                 auto old_validator = ino_update_validator(ino, r_validator);
                 // With a 7.1 client, ino_update_validator unconditionally
@@ -344,7 +344,7 @@ void openfile_stopscan(){
 
 // _register and _release are tricky.
 uint64_t
-openfile_register(fuse_ino_t ino, const reply123& r){
+openfile_register(fuse_ino_t ino, const begetattr_t& r){
     if(r.eno)
         throw se(EIO, "openfile_register called with r.eno!=0.  This shouldn't happen");
     std::lock_guard<std::mutex> lgd(mtx);
@@ -371,7 +371,7 @@ openfile_register(fuse_ino_t ino, const reply123& r){
         }
 
         mr.refcnt++;
-        if(mr.qiter->expires != r.expires){
+        if(mr.qiter->expires != r.good_till){
             // the expiration time has changed.  Update the ofpq.
             DIAGfkey(_ofmap, "old entry's expiration time changed.  erase.\n");
             ofpq.erase(mr.qiter);

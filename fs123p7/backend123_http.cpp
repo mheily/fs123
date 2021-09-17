@@ -663,13 +663,16 @@ struct backend123_http::curl_handler{
         }
         // N.B.  http_code is known to be 200 from here on...
 
-        auto ii = hdrmap.find(HHERRNO);
-        if(ii == hdrmap.end())
-            throw se(EINVAL, "No key matching " HHERRNO " in header, need errno");
-        auto eno = svto<int>(ii->second);
+        int eno72 = 0;
+        if(bep->proto_minor < 3){
+            auto ii = hdrmap.find(HHERRNO);
+            if(ii == hdrmap.end())
+                throw se(EINVAL, "No key matching " HHERRNO " in header, need errno");
+            eno72 = svto<int>(ii->second);
+        }
         auto et64 = get_etag64();
         std::string content_encoding;
-        ii = hdrmap.find("content-encoding");
+        auto ii = hdrmap.find("content-encoding");
         if(ii != hdrmap.end())
             content_encoding = ii->second;
         else
@@ -677,10 +680,12 @@ struct backend123_http::curl_handler{
         auto ce = content_codec::encoding_stoi(content_encoding);
         ii = hdrmap.find(HHCOOKIE);
         uint64_t estale_cookie = (ii == hdrmap.end()) ? 0 : svto<uint64_t>(ii->second);
-        *replyp = reply123(eno, estale_cookie, std::move(content), ce, age, max_age, et64, swr);
+        if(backend123::proto_minor<3)
+            *replyp = reply123(eno72, estale_cookie, std::move(content), ce, age, max_age, et64, swr);
+        else
+            *replyp = reply123(std::move(content), ce, age, max_age, et64, swr);
+            
         // CAUTION:  content is no longer usable!!!
-        if(eno!=0)
-            return true;
         ii = hdrmap.find(HHTRSUM);
         if(ii != hdrmap.end()){
             const std::string& val = ii->second;
@@ -690,26 +695,28 @@ struct backend123_http::curl_handler{
 					     replyp->content_threeroe, val.c_str()));
         }
             
-        ii = hdrmap.find(HHNO);
-        if(ii != hdrmap.end()){
-            // ii->second is one of:
-            // 1-  whitespace* NUMBER whitespace*  
-            // 2-  whitespace* NUMBER whitespace* "EOF" whitespace*
-            // 3-  whitespace* NUMBER <anything else> !ERROR
-            // In all cases, the NUMBER is replyp->chunk_next_offset
-            // replyp->last_chunk depends on which case.
-            size_t pos = svscan<int64_t>(ii->second, &replyp->chunk_next_offset, 0);
-            const char *p = ii->second.data() + pos;
-            while( ::isspace(*p) )
-                ++p;
-            if( *p == '\0')
-                replyp->chunk_next_meta = reply123::CNO_NOT_EOF;
-            else if(::strncmp(p, "EOF", 3)==0)
-                replyp->chunk_next_meta = reply123::CNO_EOF;
-            else
-                throw se(EPROTO, "Unrecognized words in " HHNO " header:" + ii->second);
-        }else{
-            replyp->chunk_next_meta = reply123::CNO_MISSING;
+        if(bep->proto_minor < 3){
+            if(eno72!=0)
+                return true;
+            ii = hdrmap.find(HHNO);
+            if(ii != hdrmap.end()){
+                // ii->second is one of:
+                // 1-  whitespace* NUMBER whitespace*  
+                // 2-  whitespace* NUMBER whitespace* "EOF" whitespace*
+                // 3-  whitespace* NUMBER <anything else> !ERROR
+                // In all cases, the NUMBER is replyp->chunk_next_offset
+                // replyp->last_chunk depends on which case.
+                size_t pos = svscan<int64_t>(ii->second, &replyp->chunk_next_offset72, 0);
+                const char *p = ii->second.data() + pos;
+                while( ::isspace(*p) )
+                    ++p;
+                if( *p == '\0')
+                    replyp->chunk_next_meta72 = reply123::CNO_NOT_EOF;
+                else if(::strncmp(p, "EOF", 3)==0)
+                    replyp->chunk_next_meta72 = reply123::CNO_EOF;
+                else
+                    throw se(EPROTO, "Unrecognized words in " HHNO " header:" + ii->second);
+            }
         }
         return true;
     }
@@ -1188,7 +1195,7 @@ backend123_http::refresh(const req123& req, reply123* replyp) try{
         content_reserve_size = std::min(size_t(1.1*replyp->content.size()), size_t(8192*1024));
     }
     release_curl(std::move(curl));
-    DIAGfkey(_http, "backend123_http::refresh: reply.eno=%d reply.content.size(): %zd\n", replyp->eno, replyp->content.size());
+    DIAGfkey(_http, "backend123_http::refresh: reply.content.size(): %zd\n", replyp->content.size());
     return ret;
  }catch(std::exception& e){
     std::throw_with_nested( std::runtime_error(fmt("backend123_http::get(\"%s\")", req.urlstem.c_str())));

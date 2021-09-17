@@ -1,6 +1,7 @@
 #pragma once
 #include "secret_manager.hpp"
 #include "core123/expiring.hpp"
+#include "acfd.hpp"
 #include <string>
 #include <mutex>
 #include <chrono>
@@ -14,9 +15,9 @@
 //
 // sharedkeydir(dirfd, encoding_sid_indirect, refresh_sec) - The
 //   constructor.  Dirfd is an open file descriptor to a directory
-//   containing the shared secrets.  The caller should not close the
-//   file descriptor while the sharedkeydir is in use.  sharedkeydir's
-//   destructor does not close the dirfd.
+//   containing the shared secrets.  The sharedkeydir takes "ownership"
+//   of in the constructor, and is responsible for closing it.  The
+//   caller may not access it after transferring ownership.
 //
 //   encoding_sid_indirect is used by the encode_sid() method.  See below.
 //
@@ -59,7 +60,7 @@
 
 struct sharedkeydir : public secret_manager{
 public:
-    sharedkeydir(int dirfd, const std::string& encoding_sid_indirect, unsigned refresh_sec);
+    sharedkeydir(acfd dirfd, const std::string& encoding_sid_indirect, unsigned refresh_sec);
     std::string get_encode_sid() override;
     std::string get_indirect_sid(const std::string& name) override;
     secret_sp get_sharedkey(const std::string& sid) override;
@@ -69,7 +70,7 @@ public:
 private:
     std::mutex mtx;
     core123::expiring<std::string> encode_sid;
-    int dirfd;
+    acfd dirfd;
     std::string encode_sid_indirect;
     core123::expiring_cache<std::string, secret_sp> secret_cache;  // maps sid -> secret
     core123::expiring_cache<std::string, std::string> indirect_cache; // maps name -> sid

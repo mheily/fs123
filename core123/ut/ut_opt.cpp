@@ -193,7 +193,7 @@ int main(int, char **) try
     EQUAL(path1, "/x");
     EQUAL(path2, "");
     EQUAL(path3, "");
-    CHECK(!opt_p4.get_value()); // no default, not assigned a value
+    CHECK(!opt_p4.get_as_optional()); // no default, not assigned a value
     EQUAL(path5, "");
     EQUAL(u32, 101);
     EQUAL(u64, 0xffffffffffffffff);

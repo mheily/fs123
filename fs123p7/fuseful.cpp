@@ -33,9 +33,18 @@ namespace {
 auto _shutdown = diag_name("shutdown");
 auto _llops = diag_name("llops");
 
-#define STATS_INCLUDE_FILENAME "fuseful_statistic_names"
+#define FUSEFUL_STATISTICS \
+  STATISTIC(inval_entry_successes) \
+  STATISTIC(inval_entry_noents) \
+  STATISTIC(inval_entry_fails) \
+  STATISTIC(inval_inode_successes) \
+  STATISTIC(inval_inode_noents) \
+  STATISTIC(inval_inode_fails)
+    
+#define STATS_MACRO_NAME FUSEFUL_STATISTICS
 #define STATS_STRUCT_TYPENAME fuseful_stats_t
 #include <core123/stats_struct_builder>
+#undef FUSEFUL_STATISTICS
 fuseful_stats_t stats;
 
 struct fuse_chan *g_channel;
@@ -73,7 +82,7 @@ std::unique_ptr<threadpool<void>> invaltp;
 // machinery to convert command line options into env-vars.
 //
 // The resulting command line looks like:
-//    fs123p7 mount -o GardenTimeoutCrfXz=/foo/bar/.timeout.crf.xz /path/to/GardenRemote /mount/point
+//    fs123p7 mount -oFs123This=that,Fs123Foo=bar http://server:port/sel/ect/or /mount/point
 
 enum{
     KEY_HELP,
@@ -731,36 +740,43 @@ int fuseful_main_ll(fuse_args *args, const fuse_lowlevel_ops& llops,
         // fuse_daemonize, and then fchdir afterwards to take us
         // there.
         acfd cwdfd = sew::openat(AT_FDCWD, rundir.c_str(), 0);
-        complain(LOG_NOTICE, "Calling daemonize at " + str(std::chrono::system_clock::now()));
-        fuse_daemonize(foreground);
-        complain(LOG_NOTICE, "Returned from daemonize at " + str(std::chrono::system_clock::now()));
+        if(!foreground){
+            complain(LOG_NOTICE, "Calling daemonize(foreground=" + str(foreground) + ") at " + str(std::chrono::system_clock::now()));
+            if(startswith(get_complaint_destination(), "%std"))
+                complain(LOG_WARNING, "Daemonize will redirect stdout and stderr to /dev/null.  FUTURE MESSAGES WILL BE LOST!");
+            fuse_daemonize(foreground);
+            // Note that if foreground is false, fuse_daemonize
+            // opens("/dev/null"), and then dup2's it onto fd=0, 1 and 2.
+            // So ANYTHING after this point that writes to stderr or
+            // stdout is wasting its time unless -f is on the command
+            // line.
+            complain(LOG_NOTICE, "Returned from daemonize at " + str(std::chrono::system_clock::now()));
+        }
         invaltp = std::make_unique<threadpool<void>>(1);
         sew::fchdir(cwdfd);
         cwdfd.reset();
-        //
-        // Note that if foreground is false, fuse_daemonize
-        // opens("/dev/null"), and then dup2's it onto fd=0, 1 and 2.
-        // So anything after this point that writes to stderr or
-        // stdout is wasting its time unless -f is on the command
-        // line.  But at least it won't get spurious errors or faults,
-        // and it won't have open file descriptors that make umounting
-        // hard.
-        //
-        // Unfortunately, fuse_lowlevel_new writes its complaints, and
-        // even its --help output to stderr.  So unless we also add
-        // -f, we daemonize and we never see its error messages or the
-        // --help message from fuse_lowlevel_new.  Sigh...
-        //
+
         // llops_no_destroy: we will take responsibility for calling the
         // lowlevel destroy op.  See the comments in fuse_teardown for why.
         auto llops_no_destroy = llops;
         llops_no_destroy.destroy = nullptr;
         g_session = fuse_lowlevel_new(args, &llops_no_destroy, sizeof(llops_no_destroy), nullptr);
+        if( g_session == nullptr ){
+            // Unfortunately, fuse_lowlevel_new writes its complaints, and
+            // even its --help output to stderr.  So if we daemonize we
+            // never see its error messages or the --help message from
+            // fuse_lowlevel_new.  Sigh...
+            //
+            // By far the most common (but not the only!) reason for
+            // fuse_lowlevel_new to fail is an unrecognized command
+            // line option.  Try to provide some clues about that.
+            std::string complaint = "fuse_lowlevel_new failed.  Probably because one of these command line option is unrecognized:";
+            for(int i=0; i<args->argc; ++i)
+                complaint += " " + std::string(args->argv[i]);
+            fuse_opt_free_args(args);            
+            throw se(EINVAL, complaint);
+        }
         fuse_opt_free_args(args);
-        // It seems that we don't detect bad command line args until
-        // here!
-        if( g_session == nullptr )
-            throw se(EINVAL, "fuse_lowlevel_new failed.  Unrecognized command line options??");
 
         crash_handler = crash_handler_arg;
         handle_all_signals();

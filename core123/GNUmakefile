@@ -58,6 +58,7 @@ all: check
 LINK.o = $(CXX) $(LDFLAGS) $(TARGET_ARCH)
 
 unit_tests:=\
+	ut_intuitive_compare \
 	ut_circular_shared_buffer \
 	ut_crf \
 	ut_http_error_category \

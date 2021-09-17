@@ -1,5 +1,6 @@
 #include "core123/expiring.hpp"
 #include "core123/threeroe.hpp"
+#include "core123/unused.hpp"
 #include "core123/ut.hpp"
 #include <unistd.h>
 #include <iostream>
@@ -41,6 +42,8 @@ int main(int argc, char **argv){
         std::cout << "Uh oh.  execvp returned???\n";
         return 2; // can
     }
+#else
+    core123::unused(argc, argv);
 #endif // __APPLE__
 
     expiring_cache<int, Int> ec(100);

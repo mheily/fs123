@@ -113,7 +113,6 @@
 #include "backend123_http.hpp"
 #include "volatiles.hpp"
 #include "fs123/fs123server.hpp"
-#include "fs123/sharedkeydir.hpp"
 #include <core123/threeroe.hpp>
 #include <core123/http_error_category.hpp>
 #include <core123/sew.hpp>
@@ -356,7 +355,7 @@ public:
     peer_handler_t(distrib_cache_backend& _be) : be(_be){}
     bool strictly_synchronous() override { return true; }
     void a(req_up req) override { not_found(std::move(req)); }
-    void d(req_up req, uint64_t /*inm64*/, bool /*begin*/, int64_t /*offset*/) override { not_found(std::move(req)); }
+    void d(req_up req, uint64_t /*inm64*/, std::string /*start*/) override { not_found(std::move(req)); }
     void f(req_up req, uint64_t /*inm64*/, size_t /*len*/, uint64_t /*offset*/, void */*buf*/) override { not_found(std::move(req)); }
     void l(req_up req) override { not_found(std::move(req)); }
     void s(req_up req) override { not_found(std::move(req)); }

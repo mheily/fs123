@@ -430,7 +430,7 @@ protected:
     virtual double cut(bindex_t bin) const{
         if(bin<=0)
             return -INFINITY;
-        else if((size_t)bin>=bins.size())
+        else if(bin>=bins.size())
             return INFINITY;
         else{
             double b = bottom_m + (bin-1)/invbinspacing;

@@ -36,14 +36,22 @@ versions of osxFuse:
 
 (PATH=/opt/local/libexec/gnubin:/opt/local/bin:/usr/bin:/usr/sbin:/sbin; FUSELIB=osxfuse CPPFLAGS="-I/opt/local/include -I/usr/local/include/osxfuse -Wno-attributes" LDFLAGS="-L/opt/local/lib -L/usr/local/lib" make -f @@@path-to-fs123-toplevel@@@/GNUmakefile -j )
 
-On BigSur (11.4) with macFUSE 4.1.2 or 4.2.0, the fuse includes and
-libraries have moved.  Something like this should work:
+# On OSX-11.4 BigSur
+#               with MacPorts version: 2.7.1
+#               C++: Apple clang version 12.0.5 (clang-1205.0.22.11)
+#               macFUSE:  4.1.2
+# this command seems to work:
 
-CPPFLAGS=-I/opt/local/include LDFLAGS=-L/opt/local/lib TARGET_ARCH=-mmacosx-version-min=11.2 make -f @@@path-to-fs123-toplevel@@@/GNUmakefile -j )
+PATH=/opt/local/libexec/gnubin:/opt/local/bin:/usr/bin:/bin:/usr/sbin:/sbin \
+CXX=c++ \
+CPPFLAGS="-I/opt/local/include -DBACKWARD_HAS_DWARF=1" \
+LDFLAGS="-L/opt/local/lib" \
+TARGET_ARCH="-mmacosx-version-min=11.2" \
+    make -f @@@path-to-fs123-toplevel@@@/GNUmakefile -j
 
 The binary can be installed into /usr/local/bin with a plain-old cp.  Or with:
 
-... make install
+sudo sh -c '... prefix=/usr/local make install'
 
 which will install binaries, the libfs123.a static library and header
 files in /usr/local.

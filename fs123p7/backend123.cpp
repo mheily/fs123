@@ -12,7 +12,7 @@ std::atomic<int> req123::default_stale_if_error;
 std::atomic<int> req123::default_past_stale_while_revalidate;
 
 // to link with unit tests, this seems to be the best place for proto_minor
-int proto_minor;
+/*static*/ int backend123::proto_minor = backend123::proto_minor_default;
 
 namespace{
 
@@ -27,7 +27,7 @@ add_cachetag(std::string& url, bool hasquery) {
     }
     return url;
 }
-}
+} // namespace <anon>
 
 std::string 
 backend123::add_sigil_version(const std::string& urlpfx) /*static*/ {
@@ -47,10 +47,17 @@ req123::attrreq(const std::string& name) /*static*/ {
 }    
 
 req123
-req123::dirreq(const std::string& name, uint64_t ckib, bool begin, int64_t chunkstart) /*static*/ {
+req123::dirreq(const std::string& name, uint64_t ckib, const std::string& chunkstart) /*static*/ {
     std::string escname = urlescape(name);
-    std::string ret = "/d" + escname + "?" + std::to_string(ckib) + ";" +
-	std::to_string(begin) + ";" + std::to_string(chunkstart);
+    std::string ret = "/d" + escname + "?" + std::to_string(ckib) + ";";
+    if(backend123::proto_minor < 3){
+        if(chunkstart.empty())
+            ret += "1;0";
+        else
+            ret += "0;" + chunkstart;
+    }else{
+        ret += urlescape(chunkstart);;
+    }
     return {add_cachetag(ret, true)};
 }    
 

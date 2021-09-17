@@ -70,34 +70,47 @@ done
 chmod 0755 $EXPORT_ROOT/$d/unreadable
 fs123p7 ctl $MTPT LogMaxHourlyRate 3600
 
+##############
 # Let's check errno and status for a couple of bad requests.
 # Should this get its own t-xxx file?
 mkdir $EXPORT_ROOT/$d/dir
 touch $EXPORT_ROOT/$d/regular
 
 : ${SERVPORT:=$(cat $RCroot/portfile)}
-baseurl=http://localhost:$SERVPORT/fs123/7/2
+baseurl=http://localhost:$SERVPORT/fs123/7/$PROTO_MINOR
 getstatus(){
     curl -H Accept-encoding:fs123-secretbox -si "$1" | awk '/HTTP/{print $2}'
 }
 geterrno(){
+    # ONLY FOR PROTO_MINOR=2!!
     curl -H Accept-encoding:fs123-secretbox -si "$1" | awk 'tolower($0) ~ /fs123-errno:/ { $1=""; print; }' | tr -d '[:space:]'
 }
 
 # regular is a file.  dir is a directory.  Let's ask about them "incorrectly"
-[ $(getstatus "$baseurl/d/$d/regular?128,1,0") = 200 ]
-[ $(geterrno "$baseurl/d/$d/regular?128,1,0") = 20 ] # ENOTDIR==20
-[ $(getstatus "$baseurl/f/$d/dir?128,0") = 200 ]
-[ $(geterrno "$baseurl/f/$d/dir?128,0") = 21 ] # EISDIR==21
+if [ $PROTO_MINOR -lt 3 ]; then
+    [ $(getstatus "$baseurl/d/$d/regular?128,1,0") = 200 ]
+    [ $(geterrno "$baseurl/d/$d/regular?128,1,0") = 20 ] # ENOTDIR==20
+    [ $(getstatus "$baseurl/f/$d/dir?128,0") = 200 ]
+    [ $(geterrno "$baseurl/f/$d/dir?128,0") = 21 ] # EISDIR==21
+else
+    [ $(getstatus "$baseurl/d/$d/regular?128,") = 200 ]
+    #[ $(geterrno "$baseurl/d/$d/regular?128,") = 20 ] # ENOTDIR==20
+    [ $(getstatus "$baseurl/f/$d/dir?128,0") = 200 ]
+    #[ $(geterrno "$baseurl/f/$d/dir?128,0") = 21 ] # EISDIR==21
+fi
 
 # Make some requests with bogus query-strings
 [ $(getstatus "$baseurl/f/$d/regular?128,") = 400 ]
 [ $(getstatus "$baseurl/f/$d/regular?128,xx") = 400 ]
 [ $(getstatus "$baseurl/f/$d/regular?128,%20") = 400 ]
 
-[ $(getstatus "$baseurl/d/$d/dir?128,,") = 400 ]
-[ $(getstatus "$baseurl/d/$d/dir?128,1,xx") = 400 ]
-[ $(getstatus "$baseurl/d/$d/dir?128,xx,0") = 400 ]
-[ $(getstatus "$baseurl/d/$d/dir?128,%20,0") = 400 ]
-
-
+if [ $PROTO_MINOR -lt 3 ]; then
+    [ $(getstatus "$baseurl/d/$d/dir?128,,") = 400 ]
+    [ $(getstatus "$baseurl/d/$d/dir?128,xx,0") = 400 ]
+    [ $(getstatus "$baseurl/d/$d/dir?128,%20,0") = 400 ]
+else
+    [ $(getstatus "$baseurl/d/$d/dir?x128,") = 400 ]
+    [ $(getstatus "$baseurl/d/$d/dir?128x,") = 400 ]
+    [ $(getstatus "$baseurl/d/$d/dir?;xx") = 400 ]
+fi
+############

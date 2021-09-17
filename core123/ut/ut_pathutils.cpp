@@ -14,10 +14,15 @@ void test_makedirs(){
     // First, let's check a couple of pathological calls..
     try {
         core123::makedirs("///", 0777);
+	CHECK(false);
     } catch (std::system_error& xe) {
-        EQUAL (xe.code().value(), EEXIST);
+	// Linux returns EEXIST, but MacOS (and perhaps others)
+	// returns EISDIR
+	auto ev = xe.code().value();
+        CHECK (ev==EEXIST || ev==EISDIR);
+	if(ev == EEXIST)
+	    core123::makedirs("///", 0777, true); //shouldn't throw
     }
-    core123::makedirs("///", 0777, true);
 
     try {
         core123::makedirs("", 0777);

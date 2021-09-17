@@ -42,12 +42,12 @@ script:
 
 # There must be a better way ...
 after_failure:
-    - cat s/fs123.diag
-    - cat s/errorlog.1 s/errorlog
-    - cat s/exportd.*
-    - cat c/fs123.diag
-    - cat c/fs123.err
-    - cat c/fs123.exstatus
+    - cat build/s/fs123.diag
+    - cat build/s/errorlog.1 s/errorlog
+    - cat build/s/exportd.*
+    - cat build/c/fs123.diag
+    - cat build/c/fs123.err
+    - cat build/c/fs123.exstatus
 
 before_deploy:
     - >

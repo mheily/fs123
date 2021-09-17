@@ -14,9 +14,17 @@ using namespace core123;
 static auto _cc_rules = diag_name("cc_rules");
 
 namespace{
-#define STATS_INCLUDE_FILENAME "cc_rules_statistic_names"
+#define CC_RULES_STATISTICS \
+  STATISTIC(cc_rules_successful_opens) \
+  STATISTIC(cc_rules_enoents) \
+  STATISTIC(cc_rules_enotdirs) \
+  STATISTIC_NANOTIMER(cc_rules_json_parse_sec) \
+  STATISTIC_NANOTIMER(cc_rules_get_cc_sec)
+    
+#define STATS_MACRO_NAME CC_RULES_STATISTICS
 #define STATS_STRUCT_TYPENAME cc_rules_stats_t
 #include <core123/stats_struct_builder>
+#undef CC_RULES_STATISTICS
 cc_rules_stats_t stats;
 }
 

@@ -20,6 +20,7 @@ MTPT = os.getenv('MTPT')
 
 opj = os.path.join
 wdname = tempfile.mkdtemp(prefix='t-09w2r', dir=EXPORT_ROOT)
+print("Running write-to-read test in {wdname}".format(**locals())) # python3.5 on stretch/xenial doesn't have f-strings
 os.chmod(wdname, 0O755)
 with open(opj(wdname, '.fs123_cc_rules'), 'w') as f:
     f.write("""
@@ -126,6 +127,101 @@ drh.stat('0003')
 os.unlink(wfname3)
 time.sleep(7) # assume max-age-short=4, s-w-r-short=4 on server side
 rfd3 = drh.open('0003', 0) # should fail ENOENT
+
+# What happens when the server modifies a non-terminal path component
+# E.g.
+#       server                        client
+#     creat(a/b/c/d)      
+#                       settle
+#                                   fd = open(a/b/c/d)
+#     rename(a/b, a/x)       
+#     mkdir(a/b)
+#     mkdir(a/b/c)
+#     creat(a/b/c/d)
+#                       settle
+#                                   read(fd)
+# The client-side read should return an estale.  It's
+# definitely not going to see the same thing as the sever!
+
+print("#       server                             client")
+print("#    creat(a/b/c/d)")
+sa = opj(wdname, 'a')
+sax = opj(wdname, 'a', 'x')
+sab = opj(wdname, 'a', 'b')
+sabc = opj(wdname, 'a', 'b', 'c')
+sabcd = opj(wdname, 'a', 'b', 'c', 'd')
+os.makedirs(sabc)
+fd = os.open(sabcd, os.O_RDWR|os.O_CREAT, 0o644)
+os.write(fd, b'abcd')
+os.close(fd)
+print("#                      settle");
+time.sleep(8.5)
+print("#                                   fd = open(a/b/c/d)")
+cfd = drh.open('a/b/c/d', 0)
+print("#    rename(a/b, a/x)       ")
+os.rename(sab, sax)
+print("#    mkdir(a/b)")
+print("#    mkdir(a/b/c)")
+os.makedirs(sabc)
+print("#    creat(a/b/c/d)")
+fd = os.open(sabcd, os.O_RDWR|os.O_CREAT, 0o644)
+os.write(fd, b'abcd')
+os.close(fd)
+print("#                      settle")
+time.sleep(8.5)
+print("#                                   read(fd)")
+print("# Again, expect an ESTALE                              ")
+try:
+    drh.read(cfd, 4)
+    sys.exit("Should fail with an ESTALE")
+except dualroot.MismatchException as e:
+    if type(e.a) == OSError and e.a.errno == errno.ESTALE:
+        print("Correct!  Got an estale: ", e)
+    else:
+        raise
+
+#
+# Or
+#     creat(A/b/c/d)      
+#     creat(A/x/c/d)      
+#                       settle
+#                                   fd = open(A/b/c/d)
+#     rename(A/b, A/side)       
+#     symlink(x, A/b)
+#                       settle
+#                                   read(fd)
+# Again, expect an ESTALE
+print("#     creat(A/b/c/d)                                   ")
+os.makedirs(opj(wdname, 'A/b/c'))
+fd = os.open(opj(wdname, 'A/b/c/d'), os.O_RDWR|os.O_CREAT, 0o644)
+os.write(fd, b'Abcd')
+os.close(fd)
+print("#     creat(A/x/c/d)                                   ")
+os.makedirs(opj(wdname, 'A/x/c'))
+fd = os.open(opj(wdname, 'A/x/c/d'), os.O_RDWR|os.O_CREAT, 0o644)
+os.write(fd, b'Axcd')
+os.close(fd)
+print("#                       settle                         ")
+time.sleep(8.5)
+print("#                                   fd = open(A/b/c/d))")
+cfd = drh.open('A/b/c/d', 0)
+print("#     rename(A/b, A/side)                              ")
+os.rename(opj(wdname, 'A/b'), opj(wdname, 'A/side'))
+print("#     symlink(x, A/b)                              ")
+os.symlink('x', opj(wdname, 'A/b'))
+print("#                       settle                         ")
+time.sleep(8.5)
+print("#                                   read(fd)           ")
+print("# Again, expect an ESTALE                              ")
+try:
+    drh.read(cfd, 4)
+    sys.exit("Should have failed with an ESTALE")
+except dualroot.MismatchException as e:
+    if type(e.a) == OSError and e.a.errno == errno.ESTALE:
+        print("Correct!  Got an estale: ", e)
+    else:
+        raise
+
 
 exit(0)
 

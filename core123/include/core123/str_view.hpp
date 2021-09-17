@@ -7,6 +7,15 @@
 // should be able to easily swing over to non-experimental when the
 // time comes.
 
+// In addition, sometimes you want to printf or fmt a str_view.
+// Inspired by the PRI macros in inttypes.h, we define two macros,
+// PRIsv and PRIsvarg (which uses core123::safe_int_cast) that can be
+// used like:
+//
+//         str_view sv;
+//         printf("... %" PRIsv "...", ..., PRIsvarg(sv), ...);
+//
+
 // Ha! ...  "easily...when the time comes"
 
 // llvm's libc++ and gnu's libstdc++ have different and almost comically
@@ -57,4 +66,8 @@ using str_view = basic_str_view<char, std::char_traits<char>>;
 
 } // namespace core123
 #endif
+
+#include <core123/intutils.hpp>
+#define PRIsv ".*s"
+#define PRIsvarg(sv) core123::safe_int_cast(sv.size()), sv.data()
 

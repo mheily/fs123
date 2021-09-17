@@ -1,7 +1,6 @@
 #include "exportd_handler.hpp"
 #include "fs123/stat_serializev3.hpp"
 #include "fs123/acfd.hpp"
-#include "fs123/sharedkeydir.hpp"
 #include <core123/pathutils.hpp>
 #include <core123/diag.hpp>
 #include <core123/throwutils.hpp>
@@ -22,13 +21,6 @@ using namespace core123;
 
 namespace{
     auto _exportd_handler = diag_name("exportd_handler");
-
-    // The sharedkeydir (i.e., the secret manager) is a singleton because
-    // we have to open the file descriptor *before* we call chroot.
-    // See exportd_global_setup.
-    acfd the_sharedkeydir_fd;
-    std::unique_ptr<sharedkeydir> the_sharedkeydir;
-
 } // namespace <anon>
 
 void exportd_handler::err_reply(fs123p7::req::up req, int eno){
@@ -52,10 +44,12 @@ void exportd_handler::err_reply(fs123p7::req::up req, int eno){
 // 40x), then do:
 //     return reply_exception(move(req), http_exception(400,...)).
 
-void exportd_handler::ex_reply(fs123p7::req::up req, std::exception &e){
-    // if we're looking at a system_error, then call err_reply with
-    // eno=code.value().  Otherwise, call exception_reply.
-    auto sep = dynamic_cast<std::system_error*>(&e);
+void exportd_handler::ex_reply(fs123p7::req::up req, const std::exception &e){
+    // if we're looking at a system_error in the system_category
+    // (i.e., something that encapsulates an errno), then call
+    // err_reply with eno=code.value().  Otherwise, call
+    // exception_reply.
+    auto sep = dynamic_cast<const std::system_error*>(&e);
     if(sep){
         auto& code = sep->code();
         if(code.category() == std::system_category())
@@ -86,7 +80,7 @@ exportd_handler::a(fs123p7::req::up req) try {
  }
 
 void
-exportd_handler::d(fs123p7::req::up req, uint64_t inm64, bool begin, int64_t offset) try {
+exportd_handler::d(fs123p7::req::up req, uint64_t inm64, std::string start) try {
     auto fname = opts.export_root + std::string(req->path_info);
     // use open+fdopendir so we can use O_NOFOLLOW for safety
     acfd xfd = open(fname.c_str(), O_DIRECTORY | O_NOFOLLOW | O_RDONLY);
@@ -103,8 +97,45 @@ exportd_handler::d(fs123p7::req::up req, uint64_t inm64, bool begin, int64_t off
         return not_modified_reply(std::move(req), cc);
 
     struct ::dirent* de;
-    if(!begin)
-	sew::seekdir(dir, offset);
+    // WARNING - seekdir is definitely *NOT* guaranteed to work when
+    // given an 'offset' obtained from anything other than a telldir()
+    // on the same open DIR* object.  The offset here was found in
+    // the d_off of a dirent returned by readdir on a different DIR*
+    // object, so we're pretty far "off the reservation".  However,
+    // the glibc manual says that:
+    //
+    //     Some systems define a struct dirent member named d_off
+    //     containing a magic cookie suitable as an argument to
+    //     seekdir, but others do not: glibc 2.23 on Hurd, Mac OS X
+    //     10.13, FreeBSD 6.0, NetBSD 9.0, OpenBSD 6.7, AIX 5.1, HP-UX
+    //     11, Cygwin, mingw.
+    //
+    // so what we're doing is not without precedent.  OTOH, no
+    // promises are made about d_off obtained from *another* DIR*)
+    //
+    // In general, telldir/seekdir is an abomination (see LKML
+    // discussions), but we also seekdir to a previously returned
+    // d_off when a client calls readdir sequentially, so we can't
+    // blame this on telldir/seekdir.
+    //
+    // There aren't a lot of options.  If this ever turns out to be a
+    // problem, we could mitigate (but not solve) by keeping an
+    // expiring_cache of open DIR* around, and seekdir into them.  But
+    // at some point, we'd have to flush them (or restart the server),
+    // and then we're back where we started.  Another possibility is
+    // to return an error (E2BIG) rather than getting random garbage by
+    // seekdir-ing to an offset we don't trust.
+    uint64_t last_off = 0;
+    if(!start.empty()){
+        long istart;
+        try{
+            istart = svto<long>(start);
+        }catch(std::exception& e){
+            ex_reply(std::move(req), http_exception(400, "Expected 'start' in query string to be a long integer.  Got: " + start));
+            return;
+        }
+	sew::seekdir(dir, istart);
+    }
     while( (de = sew::readdir(dir)) ){
         uint64_t entry_esc;
         try{
@@ -118,9 +149,14 @@ exportd_handler::d(fs123p7::req::up req, uint64_t inm64, bool begin, int64_t off
         }
         if(!req->add_dirent(*de, entry_esc))
             break;
+#ifndef __APPLE__
+        last_off = de->d_off;
+#else
+        last_off = de->d_seekoff;
+#endif
     }
     bool at_eof = !de;
-    d_reply(std::move(req), at_eof, etag64, esc, cc);
+    d_reply(std::move(req), at_eof ? std::string() : std::to_string(last_off), etag64, esc, cc);
 } catch (std::exception& e){
     ex_reply(std::move(req), e);
  }
@@ -222,11 +258,6 @@ void exportd_handler::p(fs123p7::req::up reqp, uint64_t /*inm64*/, std::istream&
     p_reply(std::move(reqp), uri, 0/*etag*/, "max-age=99,stale-while-revalidate=999");
 }
 #endif
-
-secret_manager*
-exportd_handler::get_secret_manager() /* override */ {
-    return the_sharedkeydir.get();
-}
 
 uint64_t
 exportd_handler::compute_etag(const struct stat& sb, uint64_t estale_cookie){
@@ -515,109 +546,8 @@ exportd_handler::logger(const char* remote, fs123p7::method_e method, const char
 
 exportd_handler::exportd_handler(const exportd_options& _opts) : opts(_opts)
 {
+    // FIXME - this rule_cache may be replaced by another one that's
+    // opened after we chroot.  It shouldn't be this convoluted.
     rule_cache = std::make_unique<cc_rule_cache>(opts.export_root, opts.rc_size, opts.default_rulesfile_maxage, opts.no_rules_cc);
     accesslog_channel.open(_opts.accesslog_destination, 0666);        
-}
-
-void exportd_global_setup(const exportd_options& exportd_opts){
-    // Configure things that aren't associated with a particular
-    // handler, but that aren't really part of the fs123server either.
-    // E.g., configuring the destination for complaints and
-    // diagnostics, daemonizing, chroot-ing, etc.
-    //
-    // Since the chroot is here, anything we have to do *before*
-    // chroot must be here too, e.g., setting up our secret_manager.
-    // And that means singletons (sharedkeydir and sharedkeydir_fd).
-    //
-    // FIXME - This is a sure sign that something is deeply wrong.
-    if(exportd_opts.daemonize && exportd_opts.pidfile.empty())
-        throw se(EINVAL, "You must specify a --pidfile=XXX if you --daemonize");
-    
-    if(exportd_opts.daemonize){
-        // We'll do the chdir ourselves after chroot, but allow
-        // daemon(3) to dup2 /dev/null onto fd=0, 1 and 2.
-        // Otherwise, our caller (e.g. sshd) might not realize that
-        // we've disconnected.  As a result, sending logs or diags to
-        // %stdout or %stderr is unproductive with with --daemonize.
-#ifndef __APPLE__
-        sew::daemon(true/*nochdir*/, false/*noclose*/);
-#else
-	throw se(EINVAL, "MacOS deprecates daemon().  Run in foreground and use launchd");
-#endif
-    }
-
-    // N.B.  core123's log_channel doesn't call openlog.  But it
-    // *does* explicitly provide a facility every time it calls
-    // syslog.  So the third arg to openlog shouldn't matter.  But
-    // just in case, glibc's openlog(...,0) leaves the default
-    // facility alone if it was previously set, and sets it to
-    // LOG_USER if it wasn't.
-    unsigned logflags = LOG_PID|LOG_NDELAY;  // LOG_NDELAY essential for chroot!
-    openlog(exportd_opts.PROGNAME, logflags, 0);
-    auto level = syslog_number(exportd_opts.log_min_level);
-    set_complaint_destination(exportd_opts.log_destination, 0666);
-    set_complaint_level(level);
-    set_complaint_max_hourly_rate(exportd_opts.log_max_hourly_rate);
-    set_complaint_averaging_window(exportd_opts.log_rate_window);
-    if(!startswith(exportd_opts.log_destination, "%syslog"))
-        start_complaint_delta_timestamps();
-
-    if(!exportd_opts.diag_names.empty()){
-        set_diag_names(exportd_opts.diag_names);
-        set_diag_destination(exportd_opts.diag_destination);
-        DIAG(true, "diags:\n" << get_diag_names() << "\n");
-    }
-    the_diag().opt_tstamp = true;
-
-    if(!exportd_opts.pidfile.empty()){
-        std::ofstream ofs(exportd_opts.pidfile.c_str());
-        ofs << sew::getpid() << "\n";
-        ofs.close();
-        if(!ofs)
-            throw se("Could not write to pidfile");
-    }
-
-    if(exportd_opts.sharedkeydir){
-        the_sharedkeydir_fd = sew::open(exportd_opts.sharedkeydir->c_str(), O_DIRECTORY|O_RDONLY);
-        the_sharedkeydir = std::make_unique<sharedkeydir>(the_sharedkeydir_fd, exportd_opts.encoding_keyid_file, exportd_opts.sharedkeydir_refresh);
-    }
-    
-    // If --chroot is empty (not the default, but it can be set to the
-    // empty string), then do neither chdir nor chroot.  The process
-    // stays in its original cwd, relative paths are relative to cwd,
-    // etc.
-    //
-    // If --chroot is non-empty, then chdir first and, if chroot
-    // is not "/", then chroot(".").  Thus it's possible to say
-    // --chroot=/ even without cap_sys_chroot, but
-    // --chroot=/anything/else requires cap_sys_chroot.
-    // 
-    // There is no option to ignore chroot errors.  If there were,
-    // overall behavior would depend on the presence/absence of
-    // capabilities, which would be bad.
-    if(!exportd_opts.chroot.empty()){
-        sew::chdir(exportd_opts.chroot.c_str());
-        log_notice("chdir(%s) successful",  exportd_opts.chroot.c_str());
-        if(exportd_opts.chroot != "/"){
-            try{
-                sew::chroot(".");
-                log_notice("chroot(.) (relative to chdir'ed cwd) successful");
-            }catch(std::system_error& se){
-                std::throw_with_nested(std::runtime_error("\n"
-"chroot(.) failed after a successful chdir to the intended root\n"
-"Workarounds:\n"
-"   --chroot=/      # chdir(\"/\") but does not make chroot syscall\n"
-"   --chroot=       # runs in cwd.  Does neither chdir nor chroot\n"
-"  run with euid=0  # root is permitted to chroot\n"
-"  give the executable the cap_sys_chroot capability, e.g.,:\n"
-"    sudo setcap cap_sys_chroot=pe /path/to/executable\n"
-"  but not if /path/to/executable is on NFS.\n"));
-                // P.S.  There may be a way to do this with capsh, but only
-                // if the kernel supports 'ambient' capabilities (>=4.3).
-                // sudo capsh --keep=1 --uid=$(id -u) --caps="cap_sys_chroot=pei"  -- -c "obj/fs123p7 exportd --chroot=/scratch ..."
-                // only gets us '[P]ermitted' cap_sys_chroot, but not [E]ffective.
-                // Maybe with more code we could upgrade from P to E?
-            }
-        }
-    }
 }

@@ -10,7 +10,6 @@
 
 // FIXME - these don't belong here.  Maybe beget.[ch]pp ?
 #include "backend123.hpp"
-reply123 begetserver_stats(fuse_ino_t ino); // in mount.fs123p7.cpp
 
 using namespace core123;
 
@@ -116,12 +115,11 @@ void open_special_ino(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
         return reply_open(req, fi);
     case SPECIAL_INO_SERVER_STATS:
         DIAGfkey(_special, "open_special_ino calling begetserver_stats(%llu)\n", (long long unsigned)ino);
-        reply123 sstats = begetserver_stats(ino);
-        DIAGfkey(_special, "sstats.content: %s\n", sstats.content.c_str());
+        auto sstats = begetserver_stats(ino);
+        DIAGkey(_special, "sstats.content: " << sstats.content() << "\n");
         if(sstats.eno)
             return reply_err(req, sstats.eno);
-        fi->fh = reinterpret_cast<decltype(fi->fh)>(new std::string(std::move(sstats.content)));
-        // sstats.content is in a valid but unspecified state!
+        fi->fh = reinterpret_cast<decltype(fi->fh)>(new std::string(sstats.content()));
         return reply_open(req, fi);
     }
     throw se(EINVAL, fmt("open_special_ino: can't handle ino: %lu", ino));

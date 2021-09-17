@@ -1,5 +1,4 @@
 #include "distrib_cache_backend.hpp"
-#include "fs123/httpheaders.hpp"
 #include <core123/strutils.hpp>
 #include <core123/streamutils.hpp>
 #include <core123/diag.hpp>
@@ -774,7 +773,7 @@ peer_handler_t::p(req::up req, uint64_t etag64, istream&) try {
     if(etag64){
         // make the reply 'valid' by setting eno and set a non-zero
         // etag64 so that backend_http adds an INM header.
-        reply123.eno = 0;
+        reply123.eno72 = 0; // ??? only because eno72==-1 is a weird indicator of "validity"
         reply123.etag64 = etag64;
     }
     if(startswith(myreq.urlstem, "/p")){
@@ -811,8 +810,16 @@ peer_handler_t::p(req::up req, uint64_t etag64, istream&) try {
         distrib_cache_stats.distc_server_refresh_not_modified++;
         return not_modified_reply(move(req), cc);
     }
-    req->add_header(HHCOOKIE, str(reply123.estale_cookie));
-    req->add_header(HHERRNO, str(reply123.eno));
+    if(req->proto_minor < 3){
+        req->add_header(HHCOOKIE, str(reply123.estale_cookie72));
+        req->add_header(HHERRNO, str(reply123.eno72));
+        if(reply123.chunk_next_meta72 != reply123::CNO_MISSING){
+            // Ugh...
+            const char *xtra = (reply123.chunk_next_meta72 == reply123::CNO_EOF) ?
+                " EOF" : "";
+            req->add_header(HHNO, str(reply123.chunk_next_offset72) + xtra);
+        }
+    }
     switch(reply123.content_encoding){
     case content_codec::CE_IDENT:
         break;
@@ -822,13 +829,7 @@ peer_handler_t::p(req::up req, uint64_t etag64, istream&) try {
     case content_codec::CE_UNKNOWN:
         throw http_exception(500, "reply has unknown encoding.  This should have been caught earlier");
     }
-    if(reply123.chunk_next_meta != reply123::CNO_MISSING){
-        // Ugh...
-        const char *xtra = (reply123.chunk_next_meta == reply123::CNO_EOF) ?
-            " EOF" : "";
-        req->add_header(HHNO, str(reply123.chunk_next_offset) + xtra);
-    }
-    // HHTRSUM
+    req->add_header(HHTRSUM, std::string(&reply123.content_threeroe[0], sizeof(reply123.content_threeroe)));
     return p_reply(move(req), reply123.content, reply123.etag64, cc);
  }catch(std::exception& e){
     try{

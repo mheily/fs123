@@ -12,8 +12,8 @@ using namespace core123;
 
 static const std::string suffix = ".sharedkey";
 
-sharedkeydir::sharedkeydir(int dirfd_, const std::string& encode_sid_indirect_, unsigned refresh_sec) :
-    dirfd(dirfd_),
+sharedkeydir::sharedkeydir(acfd dirfd_, const std::string& encode_sid_indirect_, unsigned refresh_sec) :
+    dirfd(std::move(dirfd_)),
     encode_sid_indirect(encode_sid_indirect_),
     secret_cache(10),
     indirect_cache(10),

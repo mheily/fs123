@@ -62,6 +62,21 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 //
 //   hexlownibble(n) - return the lower-case hex digit corresponding to
 //                  the least-significant four bits of n.
+//
+//   safe_integral_cast<DestType>(SrcType s) - if the numerical value of
+//                  s is representable in DestType, then return
+//                  static_cast<DestType>(s).  Otherwise, throw
+//                  a std::range_error().
+//    
+//   safe_signed_cast(SrcType s) - convert s to make_signed<SrcType>
+//                  using safe_integral_cast.
+//
+//   safe_int_cast(SrcType s) - convert s to int using safe_integral_cast.
+//                  It's used in PRIsvarg in str_view.hpp to facilitate
+//                  printf-style foratting of string_views.
+//
+//   Also see the funtions in intuitive_compare.hpp.  They are especially
+//   useful for fixing compiler warnings about signed/unsigned comparisons.
 
 #include <cinttypes>
 #include <cstdlib>
@@ -313,6 +328,55 @@ template <typename IntegerType>
 unsigned char hexlownibble(IntegerType i){
     i &= 0xf;
     return ((i>9) ? 'a'-10 : '0') + i;
+}
+
+template <typename DestType, typename SrcType>
+constexpr DestType safe_integral_cast(SrcType src){
+    static_assert(std::is_integral_v<SrcType>);
+    static_assert(std::is_integral_v<DestType>);
+    constexpr bool is_signed_Src = std::is_signed_v<SrcType>;
+    constexpr bool is_signed_Dest = std::is_signed_v<DestType>;
+    if constexpr (is_signed_Src == is_signed_Dest){
+        // if the destination is as wide or wider, we're good...
+        if constexpr ( std::numeric_limits<DestType>::digits >= std::numeric_limits<SrcType>::digits )
+            return static_cast<DestType>(src);
+        // DestType is strictly narrower than Srctype.  Check that a
+        // round-trip through DestType preserves the value of src.
+        DestType ret = static_cast<DestType>(src);
+        if(static_cast<SrcType>(ret) != src)
+            throw std::range_error("safe_integral_cast");
+        return ret;
+    }else if constexpr(is_signed_Src){
+        // Src is signed, Dest is unsigned
+        if(src < 0)
+            throw std::range_error("safe_integral_cast");
+        // treat src as unsigned.  This is value-preserving because we know it's non-negative
+        using USrcType = std::make_unsigned_t<SrcType>;
+        USrcType usrc = static_cast<USrcType>(src);
+        // Safely cast usrc to DestType (both are unsigned, possibly different widths)
+        return safe_integral_cast<DestType>(usrc);
+    }else{
+        // Src is unsigned, Dest is signed
+        constexpr DestType destmax = std::numeric_limits<DestType>::max();
+        using UDestType = std::make_unsigned_t<DestType>;
+        constexpr UDestType udestmax = static_cast<UDestType>(destmax);
+        // Can we count on the compiler to elide the comparison when UDestType is
+        // wider than SrcType?
+        if(src > udestmax) // widens to maximum of src and udest width, both are unsigned
+            throw std::range_error("safe_integral_cast");
+        // we know that src's value is representable in DestType
+        return static_cast<DestType>(src);
+    }
+}
+
+template <typename SrcType>
+constexpr auto safe_signed_cast(SrcType src){
+    return safe_integral_cast<std::make_signed_t<SrcType>, SrcType>(src);
+}
+
+template <typename SrcType>
+constexpr auto safe_int_cast(SrcType src){
+    return safe_integral_cast<int, SrcType>(src);
 }
 
 } // namespace core123

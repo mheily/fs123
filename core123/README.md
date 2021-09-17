@@ -13,7 +13,7 @@ use of C++17.
 
 Most of the code is original, but a few libraries are available
 elsewhere and are included here under the original authors' terms
-(e.g., an MIT license).
+(e.g., MIT, BSD or Boost license).
 
 # Build and installation
 
@@ -79,6 +79,7 @@ make -f ../GNUmakefile check
 * uchar_span.hpp
 * non\_null\_or\_throw.hpp
 * traits.hpp
+* intuitive_compare.hpp (BSD license, namespace core123::intuitive)
 
 ## Early access to upcoming standards
 
@@ -99,6 +100,8 @@ make -f ../GNUmakefile check
 * log_channel.hpp
 * circular\_shared\_buffer.hpp
 * http\_error\_category.hpp
+* ut.hpp
+* lest.hpp            (Boost license, namespace lest)
 
 ## Counters and Timers
 

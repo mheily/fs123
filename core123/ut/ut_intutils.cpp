@@ -1,3 +1,4 @@
+#include <iostream>
 #include "core123/intutils.hpp"
 #include "core123/ut.hpp"
 
@@ -37,9 +38,23 @@ void test_popcnt(){
 #undef CHKpopc
 }
 
+void test_safe_integral_cast(){
+#define GOODsic(T, src) EQUAL(core123::safe_integral_cast<T>(src), static_cast<T>(src))
+#define BADsic(T, src) THROWS(core123::safe_integral_cast<T>(src), std::range_error)
+    GOODsic(int, 33);
+    GOODsic(int, (uint64_t)33);
+    GOODsic(int, (char)33);
+    BADsic(unsigned, -55);
+    BADsic(int32_t, ((uint64_t)1) << 32);
+    BADsic(int32_t, ((uint64_t)1) << 31);
+    GOODsic(uint32_t, ((uint64_t)1) << 31);
+    GOODsic(int32_t, (((uint64_t)1) << 31) - 1);
+}
+
 int main(int, char **){
     test_byteswap();
     test_popcnt(); // Also tested in ut_bits and in ut_bloom.
+    test_safe_integral_cast();
     return utstatus();
 }
     

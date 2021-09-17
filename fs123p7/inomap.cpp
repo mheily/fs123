@@ -1,5 +1,4 @@
 #include "inomap.hpp"
-#include "app_mount.hpp"
 #include <core123/complaints.hpp>
 #include <core123/diag.hpp>
 #include <core123/throwutils.hpp>
@@ -13,6 +12,7 @@
 using namespace core123;
 
 auto _inomap = diag_name("inomap");
+auto _validator_ = diag_name("validator");
 
 namespace{
 
@@ -137,6 +137,7 @@ uint64_t ino_update_validator(fuse_ino_t ino, uint64_t validator) try {
     uint64_t ret = ir.validator;
     if(validator > ir.validator)
         ir.validator = validator;
+    DIAGfkey((ret!=validator) && (_inomap||_validator_), "update validator(ino=%lu): old: %lu, new: %lu\n", (unsigned long)ino, (unsigned long)ret, (unsigned long)validator);
     if(validator < ir.validator )
         throw ino_out_of_order_validator(validator, ir.validator, _fullname(ir));
     return ret;

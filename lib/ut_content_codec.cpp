@@ -48,7 +48,7 @@ expect_throw(const std::string& msg, std::function<void()> f) {
  }
 
 void try_to_use_sfname(){
-    sharedkeydir cc(sffd, "encode", 1);
+    sharedkeydir cc(sew::dup(sffd), "encode", 1);
     auto sid = cc.get_encode_sid();
     cc.get_sharedkey(sid);
 }
@@ -98,7 +98,7 @@ int main(int /*argc*/, char **/*argv*/) try {
                {{"1", "12345678 12345678 12345678 12345678 12345678 12345678 12345678 12345678 12345678 12345678 12345678 12345678\n"}});
 
     // Let's encode "hello"
-    sharedkeydir sm(sffd, "encode", 1);
+    sharedkeydir sm(sew::dup(sffd), "encode", 1);
     std::string hello = "hello";
     upspan ws1(48, hello.size(), 8);
     replace_content(ws1, 48, hello);
@@ -157,7 +157,7 @@ int main(int /*argc*/, char **/*argv*/) try {
     replace_sf("2\n",{
             {"1", "12345678 12345678 12345678 12345678 12345678 12345678 12345678 12345678 12345678 12345678 12345678 12345678\n"}});
     expect_throw("encode_sid not in sharedkeydir", [&](){
-            sharedkeydir smy(sffd, "encode", 1);
+            sharedkeydir smy(sew::dup(sffd), "encode", 1);
             upspan b(48, hello.size(), 1);
             replace_content(b, 48, hello);
             auto s = smy.get_sharedkey("2");
@@ -181,7 +181,7 @@ int main(int /*argc*/, char **/*argv*/) try {
         });
     try_to_use_sfname();  // it's not a problem to use keyid=1.
     expect_throw("non-numeric secret in secretfile", [&](){
-            sharedkeydir cc(sffd, "encode", 1);
+            sharedkeydir cc(sew::dup(sffd), "encode", 1);
             cc.get_sharedkey("22");
         });
     

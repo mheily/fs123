@@ -210,27 +210,45 @@
 // (possibly with other exceptions nested inside) if they encounter
 // any unexpected conditions.
 //
-// Advanced usage:  (subject to change!):
+// The core123::option class:
 //
-// The option class provides access to option details:
-// The p.add_option method returns an 'option' class.
-//   option opt = p.add_option(...);
+// The parser add_option() method returns an 'option' class, which
+// may be used to inspect or modify individual options:
+//
+//   option& opt = p.add_option(...);
+//
+// Similarly, the parser at() method allows one to look up an 'option'
+// by-name:
+//
+//   option& opt = p.at("--foo");
+//
 // The option class has the following methods:
-//   opt.get_name()  - returns the name by which this option may be set
-//   opt.get_value() - returns an option<string> with the specified value of the option (if any)
-//   opt.get_default() - returns an option<string> with the default value of the option (if any)
-//   opt.get_desc()  - returns the option's description
-//   opt.set(optional<string>) - sets the value and calls the callback
+//   opt.get_name()      - returns the name of this option (string)
+//   opt.get_desc()      - returns the description of this option (string)
+//   opt.get_default()   - returns the default value of this option (optional<string>)
+//   opt.set_default(dflt) - sets the default value (optional<string>)
+
+//   opt.get()          - returns a value of the option if set, or throws.
+//   opt.get(string&& alt)  - returns the value of the option if set, or alt
+//                        (like std::optional::value_or).
+//   opt.get_as_optional() - returns the value of the option as an optional<string>
+//   opt.set(opt_val) - sets the value of the option to the optional
+//                      string opt_val.  If bool(opt_val) is false,
+//                      the option becomes unset.
 //
-// The option_parser class exposes the details of all options via
-// the get_map method:
+// Convenience functions allow access to option values, by name, through
+// a parser:
 //
-//   class option_parser{
-//     public:
-//       typedef std::map<std::string, option> OptMap;
-//       const option_parser::OptMap& p.get_map() const;
-//       ...
-//   };
+//   parser.get(name)             - equivalent to parser.at(name).get()
+//   parser.get(name, alt)        - equivalent to parser.at(name).get(move(alt))
+//   parser.get_as_optional(name) - equivalent to parser.at(name).get_as_optional()
+//   parser.set(name, opt_val)    - equivalent to parser.at(name).set(opt_val)
+//
+// All of the 'by-name' methods are oblivious to hyphens, underscores and capitalization.
+//
+// Finally, the option_parser's get_map method returns a map of all known options:
+//
+//  const std::map<std::string, option>& p.get_map() const;
 //
 // INCOMPATIBILITIES
 //
@@ -242,6 +260,9 @@
 // Furthermore, parser.add_option does *not* invoke:
 //    callback(default_value, opt);
 // Callbacks are invoked only by the setopts_xxx member functions.
+//
+// The value() method may throw.  The value_or(), at() and
+// stdopt_value() methods are new.
 
 
 #pragma once
@@ -251,6 +272,7 @@
 #include <core123/unused.hpp>
 #include <string>
 #include <map>
+#include <tuple>
 #include <cstring>
 #include <iostream>
 #include <fstream>
@@ -280,6 +302,7 @@ struct option_unexpected_argument_error : public option_error{
 
 struct option{
     using opt_string = std::optional<std::string>;
+private:
     using callback_t = std::function<void(opt_string, const option&)>;
     std::string name;    // identical to the key in optmap.
     std::string desc;    // description for help text
@@ -292,12 +315,11 @@ struct option{
            callback_t cb_):
         name(name_), desc(desc_), dflt(dflt_), callback(cb_)
     { }
+    friend class option_parser;
 public:
     std::string get_name() const { return name; }
-    std::optional<std::string> get_value() const {
-        return valstr;
-    }
-    std::optional<std::string> get_default() const {
+    std::string get_desc() const { return desc; }
+    opt_string get_default() const {
         return dflt;
     }
     void set_default(opt_string newdflt){
@@ -307,7 +329,17 @@ public:
         if(!valstr && dflt)
             set(dflt);
     }
-    std::string get_desc() const { return desc; }
+
+    opt_string get_as_optional() const {
+        return valstr;
+    }
+    std::string get() const {
+        return valstr.value();
+    }
+    std::string get(std::string&& alt) const {
+        return valstr.value_or(std::move(alt));
+    }
+
     void set(opt_string newval){
         callback(newval, *this);
         valstr = newval;
@@ -324,26 +356,10 @@ private:
     // option *in* the optmap_.  Therefore, nothing may ever be
     // removed from optmap_!
     OptMap optmap_;
-    // When parsing command-line options, we ignore hyphens, underscores
-    // and case.  Canonicalize is called before keys are inserted
-    // or looked up in optmap_.
-    std::string canonicalize(const std::string& word){
-        std::string ret;
-        for(auto letter : word){
-            if(letter == '-' || letter == '_')
-                continue;
-            ret.append(1, std::tolower(letter));
-        }
-        return ret;
+    auto find(const std::string& k) {
+        return optmap_.find(canonicalize(k));
     }
-
-    option& at(const std::string& k) try {
-        return optmap_.at(canonicalize(k));
-    }catch(std::out_of_range&){
-        throw option_error("option_parser:  unknown option: " + k);
-    }
-
-    auto find(const std::string& k){
+    auto find(const std::string& k) const {
         return optmap_.find(canonicalize(k));
     }
 
@@ -365,7 +381,7 @@ public:
     }
     // creates and returns a new option.
     option& add_option(const std::string& name, opt_string dflt, const std::string& desc, callback_t cb) try {
-        auto ibpair = optmap_.emplace(std::piecewise_construct, std::forward_as_tuple(canonicalize(name)), std::forward_as_tuple(name, dflt, desc, cb));
+        auto ibpair = optmap_.emplace(std::piecewise_construct, std::forward_as_tuple(canonicalize(name)), std::forward_as_tuple(option(name, dflt, desc, cb)));
         if(!ibpair.second)
             throw option_error("opt_parser::add_option(" + name + ") already exists.");
         return ibpair.first->second;
@@ -383,8 +399,21 @@ public:
         optmap_.clear();
     }
     
+    // When parsing command-line options, we ignore hyphens, underscores
+    // and case.  Canonicalize is called before keys are inserted
+    // or looked up in optmap_.
+    static std::string canonicalize(const std::string& word){
+        std::string ret;
+        for(auto letter : word){
+            if(letter == '-' || letter == '_')
+                continue;
+            ret.append(1, std::tolower(letter));
+        }
+        return ret;
+    }
+
     void del_option(const std::string& name)try{
-        optmap_.erase(name);
+        optmap_.erase(canonicalize(name));
     }
     catch(std::exception&){std::throw_with_nested(option_error("option_error::" + strfunargs(__func__, name)));}
 
@@ -395,10 +424,35 @@ public:
     }
     catch(std::exception&){std::throw_with_nested(option_error("option_error::" + strfunargs(__func__, name, val)));}
        
-    // How much visibility should we offer into internals?  With a
-    // const reference to the optmap, a determined caller can
-    // enumerate the current option settings or generate its
-    // own helptxt.  Sufficient?
+    // By-name accessing the state of options:
+    
+    // Use 'at' to get a reference to a bona fide core123::option:
+    option& at(const std::string& k) try {
+        return optmap_.at(canonicalize(k));
+    }catch(std::out_of_range&){
+        throw option_error("option_parser:  unknown option: " + k);
+    }
+    const option& at(const std::string& k) const try {
+        return optmap_.at(canonicalize(k));
+    }catch(std::out_of_range&){
+        throw option_error("option_parser:  unknown option: " + k);
+    }
+
+    // To access the 'value' of an option, by name, the methods have the
+    // same names as the corresponding methods in core123::option.
+    opt_string get_as_optional(const std::string &name) const {
+        return at(name).get_as_optional();
+    }
+    std::string get(const std::string &name) const {
+        return at(name).get();
+    }
+    std::string get(const std::string &name, std::string&& alt) const {
+        return at(name).get(std::move(alt));
+    }
+
+    // As a last resort, we give the caller a reference to the map.  A
+    // determined caller can enumerate the current option settings or
+    // generate its own helptxt.  Sufficient?
     const OptMap& get_map() const { return optmap_; }
 
     // parses any --foo=bar from argv[startindex] onwards.
@@ -548,7 +602,7 @@ public:
         for (const auto& o : optmap_) {
             const option& opt = o.second;
             ret.append(indent, ' ');
-            ret.append(opt.name); // not o.first,  which is canonicalized
+            ret.append(opt.get_name()); // not o.first,  which is canonicalized
             if(opt.dflt){
                 ret.append(" (default=");
                 ret.append(*opt.dflt);
@@ -571,13 +625,14 @@ public:
 //   true_setter
 //   false_setter
 namespace detail{
+using opt_string = std::optional<std::string>;
 template<typename T>
 class _setter{
     T& v;
 public:
-    void operator()(std::optional<std::string> newv, const option& opt){
+    void operator()(opt_string newv, const option& opt){
         if(!newv)
-            throw option_missing_argument_error("argument required for option: --" + opt.name);
+            throw option_missing_argument_error("argument required for option: --" + opt.get_name());
         if constexpr (is_std_optional<T>::value)
             v = svto<typename T::value_type>(*newv);
         else
@@ -587,15 +642,15 @@ public:
 };
 
 template<>
-inline void _setter<std::string>::operator()(std::optional<std::string> newv, const option& opt){
+inline void _setter<std::string>::operator()(opt_string newv, const option& opt){
     if(!newv)
-        throw option_missing_argument_error("argument required for option: --" + opt.name);
+        throw option_missing_argument_error("argument required for option: --" + opt.get_name());
     v = *newv;
 }
 template<>
-inline void _setter<std::optional<std::string>>::operator()(std::optional<std::string> newv, const option& opt){
+inline void _setter<opt_string>::operator()(opt_string newv, const option& opt){
     if(!newv)
-        throw option_missing_argument_error("argument required for option: --" + opt.name);
+        throw option_missing_argument_error("argument required for option: --" + opt.get_name());
     v = *newv;
 }
 } // namespace detail
@@ -610,9 +665,9 @@ class _bool_setter{
     static_assert( std::is_same_v<bool, T> || std::is_same_v<std::optional<bool>, T> );
     T& v;
 public:
-    void operator()(std::optional<std::string> s, const option& opt){
+    void operator()(opt_string s, const option& opt){
         if(s)
-            throw option_unexpected_argument_error("unexpected argument for option: --" + opt.name);
+            throw option_unexpected_argument_error("unexpected argument for option: --" + opt.get_name());
         v = B;
     }
     _bool_setter(T& v_) : v(v_){}

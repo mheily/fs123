@@ -5,11 +5,13 @@
 // for being.  Don't use this as a "how to"!
 
 #include "fs123/fs123server.hpp"
-#include "fs123/sharedkeydir.hpp"
+#include <core123/http_error_category.hpp>
 #include <core123/svto.hpp>
 #include <core123/opt.hpp>
 #include <core123/strutils.hpp>
 #include <core123/diag.hpp>
+#include <core123/unused.hpp>
+#include <regex>
 
 using namespace core123;
 using namespace std;
@@ -24,6 +26,8 @@ static constexpr uint64_t validator = 12345;
 static constexpr uint64_t estale_cookie = 54321;
 static constexpr uint64_t etag = 31415;
 
+static const std::string cc = "max-age=3600,stale-while-revalidate=7200,stale-if-error=86400";
+
 // For debugging and bug-hunting!  Sleep for a random time to give
 // callers a chance to exercise timeout paths, expose data races,
 // etc.
@@ -37,27 +41,49 @@ void random_sleep(double b){
     std::this_thread::sleep_for(std::chrono::duration<double>(howlong));
 }
 
-// These shouldn't be global.  Can't we find a way to push them into the
-// server library?  If not, then maybe into the bench_handler?
-acfd sharedkeydir_fd;
-unique_ptr<secret_manager> secret_mgr;
+// /bigdir.NNNN is a listable directory with NNNN entries numbered 0 through
+// NNNN-1.
+void d_for_bigdir(fs123p7::req::up reqp, uint64_t /*inm64*/, const std::string& start){
+    // We know it starts with /bigdir., so
+    size_t off = sizeof("/bigdir.") - 1;
+    size_t istart, num;
+    try{
+        num = svto<size_t>(reqp->path_info, off);
+        istart = (start.empty()) ? 0 : svto<size_t>(start);
+    }catch(std::exception&){
+        return exception_reply(move(reqp), http_exception(400, "/d request doesn't look right"));
+    }
+    size_t i = istart;
+    while(i<num){
+        if(reqp->add_dirent(to_string(i), DT_REG, 0))
+            i++;
+        else
+            break;
+    }
+    std::string more = (i>=num) ? "" : to_string(i);
+    d_reply(move(reqp), more, etag, estale_cookie, cc);
+}
 
 struct bench_handler: public fs123p7::handler_base{
     // N.B.  The cc could be a constructor-argument...
-    std::string cc = "max-age=3600,stale-while-revalidate=7200,stale-if-error=86400";
     bool strictly_synchronous() override { return true; }
     void a(fs123p7::req::up reqp) override {
         struct stat sb = {}; // all zeros!
+        static regex bigdir_re("/bigdir.[0-9]+");
         if(reqp->path_info.empty()){
             // asking about the root.  It's executable but niether
             // readable nor writable.
             sb.st_mode = S_IFDIR | 0111;
+        } else if( regex_match(string(reqp->path_info), bigdir_re) ) {
+            sb.st_mode = S_IFDIR | 0555;
         }else{
-            // Other than the root, the only entries are regular files
-            // whose names can be parsed as numbers.
+            // Otherwise, the only entries are regular files
+            // whose last components be parsed as numbers.
             sb.st_mode = S_IFREG | 0444;
             try{
-                sb.st_size = svto<size_t>(reqp->path_info, 1);
+                auto [dirpart, filepart] = rsplit1(reqp->path_info, '/');
+                unused(dirpart);
+                sb.st_size = svto<size_t>(filepart);
             }catch(std::exception&){
                 return errno_reply(std::move(reqp), ENOENT, cc);
             }
@@ -68,9 +94,15 @@ struct bench_handler: public fs123p7::handler_base{
         }                
         a_reply(std::move(reqp), sb, validator, estale_cookie, cc);
     }
-    void d(fs123p7::req::up reqp, uint64_t /*inm64*/, bool /*begin*/, int64_t /*offset*/) override{
-        // There are files here, but you can't list them.
-        d_reply(std::move(reqp), true, validator, estale_cookie, cc);
+    void d(fs123p7::req::up reqp, uint64_t inm64, std::string start) override{
+        if(inm64 == etag)
+            return not_modified_reply(move(reqp), cc);
+        if( startswith(reqp->path_info, "/bigdir.") ){
+            return d_for_bigdir(move(reqp), inm64, start);
+        }else{
+            // There are files here, but you can't list them.
+            return d_reply(std::move(reqp), {}, validator, estale_cookie, cc);
+        }
     }
     void f(fs123p7::req::up reqp, uint64_t inm64, size_t len, uint64_t offset, void* buf) override{
         size_t sz;
@@ -78,7 +110,9 @@ struct bench_handler: public fs123p7::handler_base{
         // numbers.  Their contents is the letter 'x' repeated
         // <filename> times.
         try{
-            sz = svto<size_t>(reqp->path_info, 1);
+            auto [dirpart, filepart] = rsplit1(reqp->path_info, '/');
+            unused(dirpart);
+            sz = svto<size_t>(filepart);
         }catch(std::exception&){
             return errno_reply(std::move(reqp), ENOENT, cc);
         }
@@ -112,9 +146,6 @@ struct bench_handler: public fs123p7::handler_base{
         p_reply(std::move(reqp), uri, 0/*etag*/, cc);
     }
 
-    secret_manager* get_secret_manager() override{
-        return secret_mgr.get();
-    }
     bench_handler(){}
     ~bench_handler(){}
 private:
@@ -147,8 +178,6 @@ int main(int argc, char *argv[]) try
     opt_parser.add_option("threadpool_max", "0", "maximum number of handler threads", opt_setter(threadpool_max));
     int threadpool_idle;
     opt_parser.add_option("threadpool_idle", "1", "number of handler threads at zero load", opt_setter(threadpool_idle));
-    optional<string> opt_sharedkeydir;
-    opt_parser.add_option("sharedkeydir", {}, "where to find shared keys", opt_setter(opt_sharedkeydir));
     
     optional<string> opt_diag_names;
     string diag_destination;
@@ -173,10 +202,6 @@ int main(int argc, char *argv[]) try
     if(!more_args.empty())
         throw std::runtime_error("unrecognized arguments:" + strbe(more_args));
 
-    if(opt_sharedkeydir){
-        sharedkeydir_fd = sew::open(opt_sharedkeydir->c_str(), O_DIRECTORY|O_RDONLY);
-        secret_mgr = make_unique<sharedkeydir>(sharedkeydir_fd, "encoding", 90);
-    }
     // Create a bench_handler, optionally wrap it with a threadpool wrapper,
     // and then create a server with the handler.
     bench_handler h;

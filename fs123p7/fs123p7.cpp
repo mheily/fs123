@@ -69,18 +69,18 @@ int app_cachedump(int argc, char **argv) {
             }
             cout << argv[i] << " : WARNING - reply is 'invalid'.  This file shouldn't be cached\n";
         }
-        cout << argv[i] << " : errno     " << r.eno << "\n";
-        cout << argv[i] << " : expires   " << str(r.expires) << "\n";
-        cout << argv[i] << " : etag64    " << r.etag64 << "\n";
-        cout << argv[i] << " : lastrefr  " << str(r.last_refresh) << "\n";
-        cout << argv[i] << " : swr       " << str(r.stale_while_revalidate) << "\n";
-        cout << argv[i] << " : escookie  " << r.estale_cookie << "\n";
-        cout << argv[i] << " : cnextoff  " << r.chunk_next_offset << "\n";
-        cout << argv[i] << " : cnextmet  " << r.chunk_next_meta << "\n";
-        cout << argv[i] << " : encoding  " << r.content_encoding << "\n";
-        cout << argv[i] << " : trsum     " << insbe("", r.content_threeroe, r.content_threeroe+sizeof(r.content_threeroe)) << "\n";
-        cout << argv[i] << " : datalen   " << r.content.size() << "\n";
-        cout << argv[i] << " : url       " << url << "\n";
+        cout << argv[i] << " : eno72      " << r.eno72 << "\n";
+        cout << argv[i] << " : expires    " << str(r.expires) << "\n";
+        cout << argv[i] << " : etag64     " << r.etag64 << "\n";
+        cout << argv[i] << " : lastrefr   " << str(r.last_refresh) << "\n";
+        cout << argv[i] << " : swr        " << str(r.stale_while_revalidate) << "\n";
+        cout << argv[i] << " : escookie   " << r.estale_cookie72 << "\n";
+        cout << argv[i] << " : cnextoff72 " << r.chunk_next_offset72 << "\n";
+        cout << argv[i] << " : cnextmet72 " << r.chunk_next_meta72 << "\n";
+        cout << argv[i] << " : encoding   " << r.content_encoding << "\n";
+        cout << argv[i] << " : trsum      " << insbe("", r.content_threeroe, r.content_threeroe+sizeof(r.content_threeroe)) << "\n";
+        cout << argv[i] << " : datalen    " << r.content.size() << "\n";
+        cout << argv[i] << " : url        " << url << "\n";
         cout << endl;
     }
     return 0;

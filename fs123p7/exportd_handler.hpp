@@ -15,7 +15,7 @@ struct exportd_options;
 struct exportd_handler: public fs123p7::handler_base{
     bool strictly_synchronous() override { return true; }
     void a(fs123p7::req::up) override;
-    void d(fs123p7::req::up, uint64_t inm64, bool begin, int64_t offset) override;
+    void d(fs123p7::req::up, uint64_t inm64, std::string start) override;
     void f(fs123p7::req::up, uint64_t inm64, size_t len, uint64_t offset, void* buf) override;
     void l(fs123p7::req::up) override;
     void s(fs123p7::req::up) override;
@@ -25,8 +25,6 @@ struct exportd_handler: public fs123p7::handler_base{
     void p(fs123p7::req::up, uint64_t inm64, std::istream& in) override;
 #endif
     void logger(const char* remote, fs123p7::method_e method, const char* uri, int status, size_t length, const char* date) override;
-    secret_manager* get_secret_manager() override;
-
     const exportd_options& opts;
     std::unique_ptr<cc_rule_cache> rule_cache;
     core123::log_channel accesslog_channel;
@@ -35,7 +33,7 @@ struct exportd_handler: public fs123p7::handler_base{
     ~exportd_handler(){}
 protected:
     void err_reply(fs123p7::req::up, int eno);
-    void ex_reply(fs123p7::req::up, std::exception& e);
+    void ex_reply(fs123p7::req::up, const std::exception& e);
     std::string cache_control(int eno, core123::str_view path, const struct stat* sb);
     uint64_t estale_cookie(int fd, const struct stat& sb, const std::string& fullpath);
     uint64_t estale_cookie(const std::string& fullpath, int d_type);
@@ -72,19 +70,14 @@ struct exportd_options{
                    "cache-control header used when an error *other than ENOENT* is encountered.  It's not uncommon for such errors to be the result of server-side mis-configuration, so a long timeout is undesirable because it would lock in the error"); \
         ADD_OPTION(bool, bounded_max_age, true, "max-age is never more than now()-st_mtime"); \
         ADD_OPTION(size_t, rc_size, 10000, "size of rules-cache");      \
-        /* options related to shared secrets and fs123-secretbox */ \
-        ADD_STD_OPTIONAL(std::string, sharedkeydir, "path to directory containing shared secrets (pre-chroot!)"); \
-        ADD_OPTION(std::string, encoding_keyid_file, "encoding", "name of file containing the encoding secret. (if relative, then with respect to sharedkeydir, otherwise with respect to chroot)"); \
-        ADD_OPTION(uint64_t, sharedkeydir_refresh, 43200, "reread files in sharedkeydir after this many seconds"); \
         /* options controlling the threadpool */                        \
-        ADD_OPTION(size_t, threadpool_max, 0, "maximum number of threads in request handler threadpool"); \
-        ADD_OPTION(size_t, threadpool_idle, 0, "number of idle threads in request handler threadpool.  0 means handle requests synchronously"); \
+        ADD_OPTION(size_t, threadpool_max, 0, "maximum number of threads in request handler threadpool.  0 means handle requests synchronously."); \
+        ADD_OPTION(size_t, threadpool_idle, 0, "number of idle threads in request handler threadpool."); \
         /* options related to logging and diagnostics */                \
         ADD_OPTION(std::string, diag_names, "", "string passed to diag_names"); \
         ADD_OPTION(std::string, diag_destination, "", "log_channel destination for diagnostics"); \
         ADD_OPTION(std::string, accesslog_destination, "%none", "log_channel destination for access logs"); \
-        ADD_OPTION(std::string, log_destination, "%syslog%LOG_USER", "log_channel destination for 'complaints'.  Format:  \"filename\" or \"%syslog%LOG_facility\" or \"%stdout\" or \"%stderr\" or \"%none\""); \
-        ADD_OPTION(std::string, log_min_level, "LOG_NOTICE", "only send complaints of this severity level or higher to the log_destination"); \
+        ADD_OPTION(std::string, log_destination, "%syslog%LOG_USER%LOG_NOTICE", "log_channel destination for 'complaints'.  Format:  \"filename\" or \"%syslog[%LOG_facility[%LOG_level]]\" or \"%stdout\" or \"%stderr\" or \"%none\""); \
         ADD_OPTION(double, log_max_hourly_rate, 3600., "limit log records to approximately this many per hour."); \
         ADD_OPTION(double, log_rate_window, 3600., "estimate log record rate with an exponentially decaying window of this many seconds."); \
         /* options for debug/development/testing only */                \
@@ -106,8 +99,6 @@ struct exportd_options{
 #undef ADD_ALL_OPTIONS
     }
 };
-
-void exportd_global_setup(const exportd_options&);
 
 // When we're comfortable with C++17, we might want to try:
 //  https://github.com/Neargye/magic_enum

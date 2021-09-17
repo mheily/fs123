@@ -74,7 +74,7 @@ inline void processlines(std::function<size_t(char *,size_t)>fillbuf,
         } else {
             cpincr = cp - bufstart + 1;        // so we skip the delim
         }
-        str_view sv{bufstart, (size_t)(cp - bufstart)};
+        str_view sv{bufstart, safe_integral_cast<size_t>(cp - bufstart)};
         DIAG(_processlines, "calling f with " << sv.size() << ": \"" << sv << "\" cpincr=" << cpincr);
         f(sv);
         bufstart += cpincr;
