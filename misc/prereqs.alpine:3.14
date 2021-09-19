@@ -10,6 +10,7 @@ apk add bash
 apk add fuse-dev fuse-static
 apk add libsodium-dev libsodium-static
 apk add curl curl-dev curl-static
+apk add brotli-dev brotli-static
 apk add util-linux
 apk add libevent-dev libevent-static
 apk add nghttp2-static openssl-libs-static zlib-static
@@ -24,6 +25,9 @@ apk add python3
 apk add libdwarf libdwarf-dev libdwarf-static libelf-static elfutils-dev
 export LDLIBS="-ldwarf -lelf -lz"
 export CPPFLAGS="-DBACKWARD_HAS_DWARF=1 -I/usr/include/libdwarf"
+# In 3.14.2, curl-config --static-libs forgets to mention -lbrotlicommon
+# and -lbrotlienc
+LDLIBS="$LDLIBS -lbrotlicommon -lbrotlidec"
 export LDFLAGS="-static"
 # Staticly compiled code doesn't play well with valgrind.  This
 # answer: https://stackoverflow.com/a/7515951/989586 suggests that such

@@ -111,7 +111,9 @@ fs123p7 : LDLIBS += -l$(FUSELIB)
 fs123p7 : LDLIBS += $(serverlibs)
 # curllibs: either 'curl-config --libs' or 'curl-config --static-libs'
 curllibs=$(shell curl-config $(if $(filter -static,$(LDFLAGS)), --static-libs, --libs))
-fs123p7 : LDLIBS += $(curllibs)
+# put curllibs at the front so if curl-config is incomplete,
+# we can satisfy its dependencies with an explicit LDLIBS.
+fs123p7 : LDLIBS := $(curllibs) $(LDLIBS)
 fs123p7 : $(fs123p7_objs)
 
 # link ut_diskcache links with some client-side .o files
