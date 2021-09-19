@@ -9,6 +9,7 @@
 #include <core123/envto.hpp>
 #include <core123/stats.hpp>
 #include <core123/pathutils.hpp>
+#include <core123/unused.hpp>
 #include <atomic>
 #include <string>
 #include <unistd.h>
@@ -360,6 +361,74 @@ void handle_all_signals(){
     }
 }
 
+#if defined(__APPLE__)
+// WITHOUT THIS, PASSING A MISSPELLED COMMAND-LINE OPTION TO fs123p7
+// mount CAN LOCK UP THE ENTIRE MACOS SYSTEM SO THAT THE ONLY WAY OUT
+// IS A HARD POWER-CYCLE.
+void fuseful_macos_teardown(bool fuse_session_loop_returned){
+    // fuse_session_loop_returned is our imperfect strategy for
+    // detecting that we didn't actually mount a filesystem.  There
+    // are lots of ways (e.g., signals) to get here with the "wrong"
+    // value in fuse_session_loop_returned, but we hope to catch the
+    // most common failure mode: a mis-spelled or unrecognized
+    // command-line option that causes fuse_lowlevel_new to return
+    // NULL.
+    // If g_channel is NULL, it means we didn't "successfully" call
+    // fuse_mount, so maybe it's ok to not jump through these hoops.
+    // If g_mountpoint is empty, then things are pretty confused -
+    // maybe this is our second time through teardown.  Return
+    // and hope for the best.
+    if(fuse_session_loop_returned || g_channel == nullptr || g_mountpoint.empty())
+	return;
+    // On MacOS, once we've called fuse_mount, we *MUST* 
+    // go through *ALL* the remaining steps:
+    //
+    //  fuse_lowlevel_new
+    //  fuse_session_add_chan
+    //  fuse_session_loop
+    //  fuse_session_remove_chan
+    //  fuse_session_destroy
+    //  fuse_unmount.
+    //
+    // Furthermore, we MUST allow the filesystem to "run" for long
+    // enough that various daemons (finder, CoreLibraryServices, etc.,
+    // etc.) can talk to it.  They don't have to get anything useful
+    // from it: ENOTSUP is fine.  But they MUST GET SOMETHING.
+    //
+    // There's really no point in checking for errors at this point.
+    // Don't call anything that might throw.  Prefer C APIs.  Avoid
+    // sew:: and complain.
+    //
+    // Try to avoid being interrupted by a signal.
+    signal(SIGHUP, SIG_IGN);
+    signal(SIGTERM, SIG_IGN);
+    signal(SIGINT, SIG_IGN);
+    signal(SIGQUIT, SIG_IGN);
+    fprintf(stderr, "fuse_mount called but fuse_session_loop did not return cleanly.  Trying to gracefully unmount to avoid locking up MacOS");
+
+    char* av[]={const_cast<char*>("fs123_failed"), NULL};
+    struct fuse_args null_args = FUSE_ARGS_INIT(1, av);
+    struct fuse_lowlevel_ops null_ll_oper = {};
+    struct fuse_session* s = fuse_lowlevel_new(&null_args, &null_ll_oper, sizeof(null_ll_oper), NULL);
+    fuse_session_add_chan(s, g_channel);
+    // Calling fuse_session_loop is "easy".  But how do we get it to
+    // return?  Forking another process that sleeps for a couple of
+    // seconds and then execs /sbin/umount seems to work, and it gives
+    // us enough time to answer the getattrs and statfs from
+    // CoreLibraryServices, etc.
+    if(::fork() == 0){
+	// child
+	::sleep(2);
+	::execl("/sbin/umount", "umount", g_mountpoint.c_str(), NULL);
+	::exit(0);
+    }
+    fuse_session_loop(s);
+    fuse_session_remove_chan(g_channel);
+    fuse_session_destroy(s);
+    // fuse_unmount will be called by the generic fuseful_teardown
+}
+#endif
+    
 // fuseful_teardown is called by fuse_main_ll, either immediately
 // after fuse_session_loop returns or when something throws
 // unexpectedly during initialization.  Note that it is always invoked
@@ -370,7 +439,12 @@ void handle_all_signals(){
 // 'entered' flag and zeroing out g_session and g_channel) may be
 // excessively paranoid but should not cause trouble, and may even
 // avoid trouble if a signal is received while teardown is running.
-void fuseful_teardown() try {
+void fuseful_teardown(bool fuse_session_loop_returned) try {
+#if defined(__APPLE__)
+    fuseful_macos_teardown(fuse_session_loop_returned);
+#else
+    unused(fuse_session_loop_returned);
+#endif
     // ????? What's the right order here ?????
     // It seems that the shutdown sequence suggested by examples/hello_ll.c
     // results in spurious calls to fusermount /path/to/mountpoint, which
@@ -670,6 +744,7 @@ int fuseful_main_ll(fuse_args *args, const fuse_lowlevel_ops& llops,
                     const char *_signal_filename,
                     void (*crash_handler_arg)()) {
     int err = -1;
+    bool fuse_session_loop_returned = false; // see fuseful_macos_teardown
     try{
         signal_filename = _signal_filename;
         char *mountpoint = nullptr;
@@ -678,17 +753,6 @@ int fuseful_main_ll(fuse_args *args, const fuse_lowlevel_ops& llops,
         int foreground;
         if( fuse_parse_cmdline(args, &mountpoint, &multithreaded, &foreground) == -1 )
             throw se(EINVAL, "fuse_parse_cmdline returned -1.  Non-existent mountpoint?  Misspelled -option??");
-#if defined __APPLE__
-	if(!foreground){
-	    fprintf(stderr,
-		    "fuse_daemonize cannot be used reliably on macOS.\n"
-		    "Use -f with nohup, redirects and/or & to run in the background on macOS.\n");
-	    throw se(EINVAL, "can only run in foreground (-f) on macOS");
-	    // This makes it tricky to put an fs123p7 filesystem in
-	    // /etc/fstab on macOS.  See ../misc/Notes.macosx and
-	    // ../misc/mount_fs123p7.macos for suggestions.
-	}
-#endif
 
         // fuse_parse_cmdline mallocs the mountpoint.  Copying it to
         // g_mountpoint and then freeing it silences the last valgrind
@@ -795,11 +859,12 @@ int fuseful_main_ll(fuse_args *args, const fuse_lowlevel_ops& llops,
         else
             err = fuse_session_loop(g_session);
 
+	fuse_session_loop_returned = true;
         complain(LOG_NOTICE, "fuse_session_loop returned %d.", err);
     }catch(std::exception& e){
         complain(LOG_ERR, e, "Exception thrown/caught in fuse_main_ll");
     }
-    fuseful_teardown();
+    fuseful_teardown(fuse_session_loop_returned);
     return err ? 1 : 0;
  }
                            
