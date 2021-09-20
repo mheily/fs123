@@ -32,6 +32,7 @@ before_install:
     - sudo modprobe fuse
     - sudo chmod 666 /dev/fuse
     - sudo chown root:$USER /etc/fuse.conf
+    - sudo sysctl -w kernel.core_pattern=%p.core
 
 install:
     - echo "$DOCKER_PASSWORD" | docker login --username "$DOCKER_USERNAME" --password-stdin || true
@@ -42,14 +43,13 @@ script:
         ./misc/dockrun ${DOCKER_IMAGE}
         /bin/sh -e -c "cd /fs123 && . ./misc/prereqs.${DOCKER_IMAGE} && mkdir build && cd build && make -f ../GNUmakefile -j4 check && make -f ../GNUmakefile -j4 core123-check && make -f ../GNUmakefile install"
 
-# There must be a better way ...
+# Upload all the files to a pastebin-like service: https://transfer.sh
 after_failure:
-    - cat build/s/fs123.diag
-    - cat build/s/errorlog.1 s/errorlog
-    - cat build/s/exportd.*
-    - cat build/c/fs123.diag
-    - cat build/c/fs123.err
-    - cat build/c/fs123.exstatus
+    - sudo apt-get install -qq curl zstd
+    - echo 'curl -s -T "$1" https://transfer.sh; echo' >transfer.sh
+    - sudo tar -I zstd -cf server.tar.zstd build/s && sh transfer.sh server.tar.zstd
+    - sudo tar -I zstd -cf client.tar.zstd build/c && sh transfer.sh client.tar.zstd
+    - sudo tar -I zstd -cf core123-build.tar.zstd build/core123-build && sh transfer.sh core123-build.tar.zstd
 
 before_deploy:
     - >
