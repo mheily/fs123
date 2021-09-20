@@ -67,7 +67,7 @@ int main(int argc, char **argv){
 #ifndef __APPLE__
         last_d_off = de->d_off;
 #else
-	last_d_off = sew::telldir(dirp);
+        last_d_off = sew::telldir(dirp);
 #endif
         if(i<next_print/2 || i==next_print){
             if(i==next_print){
@@ -85,8 +85,16 @@ int main(int argc, char **argv){
     i = 0;
     bool done = false;
     auto start_time = std::chrono::system_clock::now();
+    next_print = 20;
     while(!done){
-        std::cout << "Shuffle " << i++ << "\n";
+        if(i<next_print/2 || i==next_print){
+            if(i==next_print){
+                std::cout << "...\n";
+                next_print *= 2;
+            }
+            std::cout << "Shuffle " << i << "\n";
+        }
+        i++;
         std::shuffle(offmap.begin(), offmap.end(), g);
         for(const auto& kv : offmap){
             sew::seekdir(dirp, kv.first);
