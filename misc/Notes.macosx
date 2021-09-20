@@ -64,16 +64,15 @@ But make check fails a few of the regression tests:
 
 - t-19inm304, t-15cornercases and t-02disconnectd fail because fs123p7 ctl fails.
 
-- t-09w2r and t-07modified fails because fs123 is apparently *not*
-satisfying its consistency guarantees.  The kernel-side caching with
-OSXfuse might be *very* different from Linux, which could easily break
-things.  This is difficult to fix.
+- In the past, t-09w2r and t-07modified failed because fs123 was
+apparently *not* satisfying its consistency guarantees.  This appears
+to be fixed with Big Sur and macFUSE 4.1.2.
 
 Also note that the 'special' files:.fs123_{config,statistics,server_statistics} 
 always appear empty because osxfuse treats st_size=0 differently from
 Linux fuse.
 
-Also note that the tests don't shut down cleanly because osxfuse
+Also note that the tests don't shut down cleanly because macFUSE
 doesn't have fusermount!
 
 ----- System Configuration
