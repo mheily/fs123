@@ -124,11 +124,6 @@ unit_tests:=\
 # In a few cases (e.g., clang8 with libstdc++), a test won't compile
 # for reasons that appear to be compiler/library bugs and not our
 # code.  The caller can set DO_NOT_TEST to avoid errors.
-
-# The elastic_threadpool unit test intermittently detects a genuine
-# bug in elastic_threadpool.  Until it's fixed, exclude
-# elastic_threadpool from unit_tests.
-DO_NOT_TEST+=ut_elastic_threadpool
 ifdef DO_NOT_TEST
 $(warning Remove tests matching '$(DO_NOT_TEST)' from unit_tests:)
 $(warning $(filter $(DO_NOT_TEST),$(unit_tests)))
@@ -143,13 +138,21 @@ unit_tests.out:=$(addsuffix .out, $(unit_tests) $(shunit_tests))
 # something is wrong and a core dump.  2 minutes should be *plenty* of
 # time.
 ut_%.out : ut_%
-	timeout -s ABRT 2m ./$< > $@.tmp && mv $@.tmp $@
+	timeout -s ABRT 2m ./$< > $@.tmp 2>&1 && mv $@.tmp $@
 
 ut_diagtime_flood.out: ut_diagtime_flood
-	DIAG_OPTS=flood ./$< > $@.tmp && mv $@.tmp $@
+	DIAG_OPTS=flood ./$< > $@.tmp 2>&1 && mv $@.tmp $@
 
 ut_configparser.out: ut_configparser testconfigparser
-	TESTDATA=$(top/)/ut/testdata ./$< > $@.tmp && mv $@.tmp $@
+	TESTDATA=$(top/)/ut/testdata ./$< > $@.tmp 2>&1 && mv $@.tmp $@
+
+# One of elastic_threadpool's possible failure modes (now believed
+# fixed!) is that it closes all worker threads and never services the
+# last submitted task.  The unit test just hangs.  It's intermittent,
+# and is more likely under heavy load, so we run 8 in parallel.  But
+# it's hard to know just how much time to allow before timing out.
+ut_elastic_threadpool.out: ut_elastic_threadpool
+	seq 8 | xargs -n1 -P8 timeout -s ABRT 15m ./ut_elastic_threadpool > $@.tmp 2>&1 && mv $@.tmp $@
 
 .PHONY: check
 check: $(unit_tests.out)

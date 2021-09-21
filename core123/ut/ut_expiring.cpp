@@ -51,10 +51,12 @@ int main(int argc, char **argv){
     for(int i=0; i<50; ++i)
         ec.insert(scramble(i), -i, std::chrono::milliseconds(100));
     EQUAL(ec.evictions(), 0);
-    for(int i=0; i<50; ++i)
-        EQUAL(ec.lookup(scramble(i)), -i);
-    for(int i=0; i<50; ++i)
-        CHECK(!ec.lookup(scramble(i)).expired() && ec.lookup(scramble(i)) == -i);
+    for(int i=0; i<50; ++i){
+        // On a heavily loaded machine, we might get context-switched
+        // out and find ourselves looking up expired entries.
+        auto e = ec.lookup(scramble(i));
+        CHECK(e.expired() || e == -i);
+    }
     cout << "OK - lookups pass\n";
 
     ::sleep(1);

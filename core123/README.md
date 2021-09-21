@@ -63,6 +63,8 @@ make -f ../GNUmakefile check
 
 * producerconsumerqueue.hpp
 * threadpool.hpp
+* elastic_threadpool.hpp
+* atomic_utils.hpp
 * countedobj.hpp
 * occupancyguard.hpp
 * periodic.hpp

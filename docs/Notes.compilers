@@ -16,13 +16,16 @@ __cpp_lib_gcd_lcm
 __cpp_lib_optional
 __cpp_lib_byte
 __cpp_lib_atomic_is_always_lock_free
+__cpp_deduction_guides >= 201606 
 
 Of these, if_constexpr is most significant.  We should never again
 write an SFINAE template when if constexpr would solve the problem.
 Furthermore, the lack of inline variables makes it difficult
 (impossible?) for a header-only library to have completely usable
 static member values.  The others are more nice-to-have than critical,
-but they definitely waste our time and add technical debt.
+but they definitely waste our time and add technical debt.  CTAD may
+have some subtleties - it was implemented in gcc7, but some
+last-minute tweaks to the standard didn't get in till gcc8.
 
 Consequences:
 

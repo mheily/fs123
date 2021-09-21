@@ -1,6 +1,7 @@
 #pragma once
 #include <mutex>
 #include <condition_variable>
+#include <optional>
 #include <list>
 
 // producerconsumequeue<T> - a basic thread-safe producer/consumer queue for
@@ -40,6 +41,12 @@
 //      process(next);
 //   }
 //
+// Or,
+//   optional<T> next;
+//   while( next = q.dequeue() ){
+//     process(*next);
+//   }
+
 // Producer Thread(s):
 //    q.enqueue(t1);
 //   ...
@@ -128,6 +135,9 @@ public:
         enqueue_able_cv.notify_all();
     }        
 
+    // Old-school API:
+    // return a bool indicating whether result was
+    // replaced
     bool dequeue(T& result){
         std::unique_lock<std::mutex> lk{mtx};
         while( l.empty() && !is_closed )
@@ -140,6 +150,21 @@ public:
         return true;
     }
     
+    // New-fangled API:
+    // return an optional<T>
+    std::optional<T> dequeue(){
+        std::unique_lock<std::mutex> lk{mtx};
+        while( l.empty() && !is_closed )
+            dequeue_able_cv.wait(lk);
+        std::optional<T> ret;
+        if(!l.empty()) {
+            ret.emplace(std::move(l.front()));
+            l.pop_front();
+            enqueue_able_cv.notify_one();
+        }
+        return ret;
+    }
+
     bool empty() const {
         std::lock_guard<std::mutex> lg{mtx};
         return l.empty();
