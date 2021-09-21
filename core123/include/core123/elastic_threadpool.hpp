@@ -1,3 +1,6 @@
+#ifndef USE_BUGGY_ELASTIC_THREADPOOL
+#error "elastic_threadpool.hpp has an unresolved bug.  You must #define USE_BUGGY_ELASTIC_THREADPOOL to use it."
+#endif
 #pragma once
 
 #include "producerconsumerqueue.hpp"

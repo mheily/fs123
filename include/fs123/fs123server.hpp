@@ -266,7 +266,11 @@
 #include <core123/opt.hpp>
 #include <core123/netstring.hpp>
 #include <core123/unused.hpp>
+#ifdef USE_BUGGY_ELASTIC_THREADPOOL
 #include <core123/elastic_threadpool.hpp>
+#else
+#include <core123/threadpool.hpp>
+#endif
 #include <string>
 #include <vector>
 #include <list>
@@ -497,10 +501,22 @@ struct handler_base{
               
 template <typename H>
 class tp_handler : public handler_base{
+#ifdef USE_BUGGY_ELASTIC_THREADPOOL
     core123::elastic_threadpool<void> tp;
+#else
+    core123::threadpool<void> tp;
+#endif
     H& h;
 public:
-    tp_handler(size_t threadpool_max, size_t threadpool_idle, H& h_) : tp(threadpool_max, threadpool_idle), h(h_){
+#ifdef USE_BUGGY_ELASTIC_THREADPOOL
+    tp_handler(size_t threadpool_max, size_t threadpool_idle, H& h_) :
+        tp(threadpool_max, threadpool_idle),
+#else
+    tp_handler(size_t threadpool_max, size_t, H& h_) :
+        tp(threadpool_max), // ignore threadpool_idle
+#endif
+        h(h_){
+
         if(!h.strictly_synchronous())
             throw std::runtime_error("tp_handler can only wrap synchronous handlers");
     }

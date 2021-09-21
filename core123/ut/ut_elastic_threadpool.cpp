@@ -1,3 +1,4 @@
+#define USE_BUGGY_ELASTIC_THREADPOOL // Yes.  It's buggy.  This is how we test that.
 #define CORE123_DIAG_FLOOD_ENABLE 1
 #include "core123/elastic_threadpool.hpp"
 #include "core123/scoped_timer.hpp"
