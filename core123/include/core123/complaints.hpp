@@ -5,6 +5,7 @@
 #include <core123/diag.hpp>
 #include <core123/datetimeutils.hpp>
 #include <core123/exnest.hpp>
+#include <core123/envto.hpp>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -116,6 +117,33 @@
 //    The current values of the complaint_level, max_hourly_rate and
 //    averaging_window may be retrieved with get_XXX functions.
 //
+// In addition, this header also defines a macro:
+//
+//     core123_soft_assert(expr)
+//
+// which acts like 'assert', but instead of aborting, it increments a
+// counter and sends the error message through the complaint channel
+// with priority LOG_CRIT.  The number of program-wide failures can
+// be accessed via:
+//
+//    core123::get_soft_assert_failures();
+//
+// By default, soft assertion failures are NOT fatal, unless the
+// environment variable CORE123_SOFT_ASSERT_TERMINATES is 1 or true.
+// The behavior can also be modified/accessed at runtime with:
+//
+//    core123::set_soft_assert_terminates(bool newval)
+//    core123::get_soft_assert_terminates()
+//
+// For even more control, the program can specify how failures are handled:
+//    typedef void (*soft_assert_handler_t)(const char *file, int line, const char* func, const char *expr);
+//    void set_soft_assert_handler(soft_assert_handler_t)
+//    soft_assert_handler_t get_soft_assert_handler()
+// A user-specified hander can call the default handler:
+//    core123::default_soft_assert_handler(...);
+// If the argument to set_soft_assert_handler is a null pointer, the default
+// behavior is restored.
+
 // TODO:
 //   - DO NOT turn this into yet another logging library.  If there's
 //     significantly more "heavy lifting" to do, then find a way to
@@ -136,10 +164,17 @@
 //     do it ourselves.
 // 
 
-// "private" members:
+
+// core123_soft_assert - like assert, but ONLY complains.  DOES NOT ABORT.
+#define core123_soft_assert(expr) \
+    (static_cast<bool>(expr) \
+    ? void(0) \
+     : core123::_soft_assert_failure(__FILE__, __LINE__, __PRETTY_FUNCTION__, #expr))
 
 namespace core123{
 
+typedef void (*soft_assert_handler_t)(const char*, int, const char*, const char*);
+void default_soft_assert_handler(const char* file, int line, const char* pretty_function, const char* expr);
 // complainer_t is a singleton class that bundles state variables and
 // methods that were previously in file-scope statics in
 // complaints.cpp.  The complaint API has always been via free
@@ -155,6 +190,12 @@ struct complainer_t{
     friend float get_complaint_averaging_window();
     friend void set_complaint_level(int newlevel);
     friend int get_complaint_level();
+    friend void set_soft_assert_terminates(bool newval);
+    friend bool get_soft_assert_terminates();
+    friend size_t get_soft_assert_failures();
+    friend void _soft_assert_failure(const char* file, int line, const char* pretty_function, const char* expr);
+    friend void set_soft_assert_handler(soft_assert_handler_t);
+    friend soft_assert_handler_t get_soft_assert_handler();
     friend void complain(int priority, const std::string& msg);
     friend void vcomplain(int priority, const char *fmt, va_list ap);
     friend void complain(int priority, const std::exception& e, const std::string& msg);
@@ -162,6 +203,7 @@ struct complainer_t{
     friend void vcomplain(int priority, const std::exception &e, const char *fmt, va_list ap);
 #endif        
 
+    
     // If delta timestamps are on, then the first [N.0] sub-record of
     // every complaint gets an additional +%.3f delta timestamp.
     // Delta timestamps are seconds since start_complaint_delta_timestamp()
@@ -189,6 +231,9 @@ private:
     std::mutex mtx; // protects the throttling vars *and* keeps the logs together
     bool delta_timestamps = 0;
     std::chrono::system_clock::time_point delta_timestamp_zero;
+    bool soft_assert_terminates = envto<bool>("CORE123_SOFT_ASSERT_TERMINATES", false);
+    soft_assert_handler_t soft_assert_handler = &default_soft_assert_handler;
+    std::atomic<size_t> soft_assert_failures{0};
 
     // complainer_t is a singleton.  Only one will ever be created
     // by the_complainer().
@@ -374,6 +419,9 @@ inline float get_complaint_averaging_window(){
 inline void set_complaint_level(int newlevel){ the_complainer()._complaint_level = newlevel&0x7; }
 inline int get_complaint_level(){ return the_complainer()._complaint_level; }    
 
+inline void set_soft_assert_terminates(bool newval) { the_complainer().soft_assert_terminates = newval; }
+inline bool get_soft_assert_terminates(){ return the_complainer().soft_assert_terminates; }
+
 // If delta timestamps are on, then the first [N.0] sub-record of
 // every complaint gets an additional +%.3f delta timestamp.
 // Delta timestamps are seconds since start_complaint_delta_timestamp()
@@ -445,6 +493,37 @@ inline void complain(const std::string& msg){
 
 inline void log_notice(const std::string& msg){
     complain(LOG_NOTICE, msg);
+}
+
+inline void
+_soft_assert_failure(const char* file, int line, const char* pretty_function, const char* expr){
+    the_complainer().soft_assert_failures.fetch_add(1);
+    return the_complainer().soft_assert_handler(file, line, pretty_function, expr);
+}
+
+inline void
+default_soft_assert_handler(const char* file, int line, const char* pretty_function, const char* expr){
+    auto terminates = get_soft_assert_terminates();
+    complain(LOG_CRIT,
+             std::string(file) + ":" + str(line) + ": " + pretty_function + ": core123::soft_assert_failure `" + expr + "' failed." +
+             (terminates ? " Terminating." : " Continuing."));
+    if(terminates)
+        std::terminate();
+}
+
+inline void
+set_soft_assert_handler(soft_assert_handler_t newh){
+    the_complainer().soft_assert_handler = newh ? newh : &default_soft_assert_handler;
+}
+
+inline soft_assert_handler_t
+get_soft_assert_handler(){
+    return the_complainer().soft_assert_handler;
+}
+
+inline size_t
+get_soft_assert_failures(){
+    return the_complainer().soft_assert_failures;
 }
 
 // Now for the overloads that that take a printf-style format string

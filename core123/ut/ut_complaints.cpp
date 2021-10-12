@@ -1,14 +1,18 @@
 #include <core123/complaints.hpp>
 #include <core123/sew.hpp>
 #include <core123/stacktrace.hpp>
+#include <core123/unused.hpp>
 #include <stdexcept>
 #include <thread>
 #include <chrono>
+#include <setjmp.h>
 
 using core123::complain;
 using core123::set_complaint_destination;
 using core123::set_complaint_level;
 using core123::set_complaint_max_hourly_rate;
+using core123::set_soft_assert_handler;
+using core123::set_soft_assert_terminates;
 using core123::get_complaint_max_hourly_rate;
 using core123::get_complaint_hourly_rate;
 using core123::set_complaint_averaging_window;
@@ -17,6 +21,9 @@ using core123::start_complaint_delta_timestamps;
 using core123::fmt;
 using core123::str;
 using core123::stacktrace_from_here;
+using core123::unused;
+
+jmp_buf hoop; // so we can recover from an intentional std::terminate
 
 void open_does_not_exist(){
     core123::sew::open("/does/not/exist", O_RDONLY);
@@ -44,6 +51,13 @@ void deep(int n){
         complain(LOG_NOTICE, "Calling complainbt at the bottom of a stack of recursive calls to deep:\n" + str(stacktrace_from_here()));
     else
         deep(n-1);
+}
+
+void assert_non_negative(int n){
+    core123_soft_assert(n>=0);
+    if(n<0)
+        return;
+    assert_non_negative(n-1);
 }
 
 int main(int, char **){
@@ -93,6 +107,33 @@ int main(int, char **){
         std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 
+    // test assertions:
+    std::cerr << "Call assert_non_negative(5) with default settings:\n";
+    assert_non_negative(5);
+    
+    set_soft_assert_handler([](const char*file, int line, const char* func, const char* expr){
+                           complain(LOG_CRIT, "Assertion failed with a fancy handler:");
+                           complain(LOG_CRIT, str(stacktrace_from_here()));
+                           core123::default_soft_assert_handler(file, line, func, expr);
+                       });
+    assert_non_negative(7);
+
+    set_soft_assert_handler(nullptr);
+    set_soft_assert_terminates(true);
+    // Ugh.  You can't return from a SIGABRT handler.  But you can longjmp
+    // out of it.  We really just want to call assert_non_negative here
+    // and confirm that it calls abort, but that requires longjmp-ing
+    // through some tricky hoops if we don't want our unit test to exit
+    // with status 134.
+    if(::setjmp(hoop) == 0){
+        signal(SIGABRT, [](int){
+                            unused(::write(2, "SIGABRT ignored\n", 16));
+                            ::longjmp(hoop, 1);
+                        });
+        assert_non_negative(7);
+    }else{
+        std::cerr << "Whew.  Jumped through sigabrt hoop\n";
+    }
     return 0;
 }
 
