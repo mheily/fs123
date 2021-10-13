@@ -2,9 +2,11 @@
 // Various utilities to handle pathnames, dirs and files
 #include <string>
 #include <vector>
+#include <utility>
 #include <limits.h> // PATH_MAX
 #include <fcntl.h>  // AT_FDCWD
 #include <sys/stat.h> // mkdir
+#include <core123/str_view.hpp>
 #include <core123/throwutils.hpp>
 #include <core123/strutils.hpp>
 #include <unistd.h>
@@ -16,28 +18,86 @@ namespace core123 {
 //  if rel starts with /, then return it.
 //  else if rel is empty, return cwd(),
 //  else return cwd()/rel.
-inline std::string apath(const std::string& rel=std::string()){
+inline std::string apath(str_view rel={}){
     if( !rel.empty() && rel[0] == '/' )
-        return rel;
+        return std::string(rel);
     char buf[PATH_MAX];
-    // don't use system_error_wrapper to preserve pathutils.hpp's header-only status
     if( ::getcwd(buf, sizeof(buf)) == (char *)0 )
         throw se(str("getcwd", (void*)buf, sizeof(buf)));
     if(rel.empty())
         return std::string(buf);
     else
-        return std::string(buf) + "/" + rel;
+        return std::string(buf) + "/" + std::string(rel);
 }
 
-// pathsplit - split a path into directory and file parts.
-//  If the argument contains no slashes, then the returned
-//  dirpart is empty.
+// pathsplit - Deprecated.  Use sv_pathsplit instead.  Split a path
+//  into directory and file parts.  If the argument contains no
+//  slashes, then the returned dirpart is empty.  Otherwise, the dir
+//  part is everything before the last slash and the file part is
+//  everything after the last slash.  Multiple slashes get no special
+//  handling.  Also note that pathsplit("foo") is indistinguishable
+//  from pathsplit("/foo").
+//      pathsplit("foo/bar/baz") -> ("foo/bar", "baz")
+//      pathsplit("foo/bar") -> ("foo", "bar")
+//      pathsplit("foo/") -> ("foo", "")
+//      pathsplit("foo")  -> ("", "foo")
+//      // pathsplit can't tell the difference between "foo" and "/foo"!
+//      pathsplit("/foo")    -> ("", "foo")
+//      pathsplit("foo")     -> ("", "foo")
+//      // pathsplit doesn't recognize the semantics of multiple slashes.
+//      pathsplit("foo//bar") -> ("foo/", "bar")
+//      pathsplit("//foo///bar//baz") -> ("//foo///bar/", "baz")
 inline std::pair<std::string, std::string> pathsplit(const std::string& p){
     auto last = p.find_last_of('/');
     if(last == std::string::npos)
-        return make_pair( std::string(), p );
+        return std::make_pair( std::string(), p );
     else
-        return make_pair( p.substr(0, last), p.substr(last+1) );
+        return std::make_pair( p.substr(0, last), p.substr(last+1) );
+}
+
+// sv_pathsplit - splits its argument into a dirpart and a filepart.
+//   Returns a pair<optional<str_view>, str_view>.  When the argument
+//   contains no slashes, the dirpart of the returned value is an
+//   empty std::optional and the filepart is the argument.  Otherwise,
+//   the dirpart is whatever came before the last contiguous group of
+//   slashes and the filepart is whatever came after the last
+//   contiguous group of slashes, both of which may be the empty
+//   string.
+//
+//   The dirpart never ends with a slash.  The filepart never contains
+//   a slash.
+//
+//   sv_pathsplit("foo/bar") -> ("foo", "bar")
+//   sv_pathsplit("foo/")    -> ("foo", "")
+//   sv_pathsplit("/foo")    -> ("", foo")
+//   sv_pathsplit("/")       -> ("", "")
+//   sv_pathsplit("")        -> ({}, "")
+//   sv_pathsplit("foo")     -> ({}, "foo")
+//
+//   Note that in the last two cases, the first value returned is an
+//   empty std::optional, distinct from a non-empty std::optional that
+//   contains an empty str_view (the previous two cases).
+//
+//   Also note that only the *last* contiguous group of slashes is
+//   treated as a group:
+//
+//   sv_pathsplit("//a///b/foo//bar") -> ("//a///b/foo", "bar")
+//   sv_pathsplit("//a///b/foo//")    -> ("//a///b/foo", "")
+//   sv_pathsplit("//a///b//foo")     -> ("//a///b", foo")
+//   sv_pathsplit("//a///b//")        -> ("//a///b", "")
+//   sv_pathsplit("//a")              -> ("", "a")
+//   sv_pathsplit("///")              -> ("", "")
+//
+//   Note that core123::rsplit1(str_view) is the same as sv_pathsplit,
+//   except that it does not treat multiple slashes as a single
+//   separator.
+inline std::pair<std::optional<str_view>, str_view>
+sv_pathsplit(str_view p){
+    auto ret = rsplit1(p, '/');
+    static_assert(str_view::npos+1U == 0, "Hang on.  Isn't str_view::npos == -1?");
+    if(ret.first)
+        *ret.first = ret.first->substr(0, ret.first->find_last_not_of('/')+1U);
+    return ret;
 }
 
 // _makedirsat - used internally by makedirs.

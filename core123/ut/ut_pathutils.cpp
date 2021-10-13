@@ -152,7 +152,50 @@ void test_makedirs(){
     sew::rmdir(name);
 }
 
+void chk_pathsplit(const char* in, const char* dexpect, const char* fexpect){
+    auto [dpart, fpart] = core123::pathsplit(in);
+    EQUAL(dpart, dexpect);
+    EQUAL(fpart, fexpect);
+}
+
+void test_pathsplit(){
+    chk_pathsplit("foo/bar/baz", "foo/bar", "baz");
+    chk_pathsplit("foo/bar", "foo", "bar");
+    chk_pathsplit("foo/", "foo", "");
+    chk_pathsplit("foo", "", "foo");
+    // pathsplit can't tell the difference between "foo" and "/foo"!
+    chk_pathsplit("/foo", "", "foo");
+    chk_pathsplit("foo", "", "foo");
+    // pathsplit doesn't recognize the semantics of multiple slashes.
+    chk_pathsplit("foo//bar", "foo/", "bar");
+    chk_pathsplit("//foo///bar//baz", "//foo///bar/", "baz");
+}
+
+
+void chk_sv_pathsplit(const char* in, std::optional<core123::str_view> dexpect, core123::str_view fexpect){
+    auto [dpart, fpart] = core123::sv_pathsplit(in);
+    EQUAL(dpart, dexpect);
+    EQUAL(fpart, fexpect);
+}
+    
+void test_sv_pathsplit(){
+    chk_sv_pathsplit("foo/bar", "foo", "bar");
+    chk_sv_pathsplit("foo/", "foo", "");
+    chk_sv_pathsplit("/foo", "", "foo");
+    chk_sv_pathsplit("/", "", "");
+    chk_sv_pathsplit("bar", {}, "bar");
+    chk_sv_pathsplit("", {}, "");
+    chk_sv_pathsplit("//a///b/foo//bar", "//a///b/foo", "bar");
+    chk_sv_pathsplit("//a///b/foo//", "//a///b/foo", "");
+    chk_sv_pathsplit("//a///b//foo", "//a///b", "foo");
+    chk_sv_pathsplit("//a///b//", "//a///b", "");
+    chk_sv_pathsplit("//a", "", "a");
+    chk_sv_pathsplit("///", "", "");
+}
+
 int main(int, char **){
     test_makedirs();
+    test_pathsplit();
+    test_sv_pathsplit();
     return utstatus();
 }
