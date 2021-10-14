@@ -139,10 +139,6 @@ void add_hdr(evkeyvalq* hdrs, const char* n, const std::string& v){
     add_hdr(hdrs, n, v.c_str());
 }
 
-void add_hdr(evkeyvalq* hdrs, const std::string& n, const std::string& v){
-    add_hdr(hdrs, n.c_str(), v.c_str());
-}
-
 void add_hdr(evkeyvalq* hdrs, const char* n, str_view v){
     add_hdr(hdrs, n, std::string(v));
 }
@@ -1173,11 +1169,11 @@ size_t req::dirent_space_avail() const /*public*/{
     return  buf_content_avail_back();
 }
 
-void req::add_header(const std::string& name, const std::string& value){
+void req::add_header(const char* name, const char* value){
     if(function != "p")
         httpthrow(500, "handler called add_header while handling " + std::string(function) + " request");
     add_hdr(evhttp_request_get_output_headers(evhr), name, value);
-}
+}    
 
 std::optional<std::string> req::get_header(const std::string& name){
     auto inheaders = evhttp_request_get_input_headers(evhr);

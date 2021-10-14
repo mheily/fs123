@@ -371,8 +371,21 @@ struct req{
     bool add_dirent(core123::str_view name, int type, uint64_t esc);
     bool add_dirent(const ::dirent& de, uint64_t esc);
     size_t dirent_space_avail() const;
-    // Method that may only be called from within a p() handler:
-    void add_header(const std::string& name, const std::string& value);
+    // Methods that may only be called from within a p() handler:
+    //
+    // The underlying evhttp_add_header takes NUL-terminated char*, so
+    // we can save some "promotions" to std::string by having add_header
+    // overloads that take const char* arguments.
+    void add_header(const char* name, const char* value);
+    void add_header(const std::string& name, const std::string& value){
+        return add_header(name.c_str(), value.c_str());
+    }
+    void add_header(const char* name, const std::string& value){
+        return add_header(name, value.c_str());
+    }
+    void add_header(const std::string& name, const char* value){
+        return add_header(name.c_str(), value);
+    }
 
     std::optional<std::string> get_header(const std::string& name);
     std::pair<std::string, uint16_t> get_peer() const;
