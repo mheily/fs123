@@ -18,18 +18,13 @@
 mkfile_path := $(word $(words $(MAKEFILE_LIST)),$(MAKEFILE_LIST))
 top/ := $(dir $(mkfile_path))
 abstop/ := $(realpath $(top/))/
-VPATH=$(top/)lib:$(top/)fs123p7:$(top/)examples:$(top/)testserver
+VPATH=$(top/)lib:$(top/)exe/fs123p7:$(top/)exe/examples:$(top/)exe/testserver
 # Link with $(CXX), not $(CC)!
 LINK.o = $(CXX) $(LDFLAGS) $(TARGET_ARCH)
 
 # First, let's define the 'all' target so a build with no arguements
 # does something sensible:
 binaries=fs123p7
-
-fs123p7_is_a_directory=$(shell [ -d fs123p7 ] && echo yes)
-ifeq ($(fs123p7_is_a_directory), yes)
-$(error it looks like you're running make in the top-level of the gardenfs tree.  You can't do that.  cd to somewhere else and do 'make -f $(abstop/)GNUmakefile ...'  )
-endif
 
 unit_tests=ut_diskcache
 unit_tests += ut_seektelldir
