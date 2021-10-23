@@ -1,11 +1,10 @@
 #!/usr/bin/make -f
 # See debhelper(7) (uncomment to enable)
 # output every command that modifies files on the build system.
-#export DH_VERBOSE = 1
-
+export DH_VERBOSE = 1
 
 # see FEATURE AREAS in dpkg-buildflags(1)
-#export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 
 # see ENVIRONMENT in dpkg-buildflags(1)
 # package maintainers to append CFLAGS
@@ -13,12 +12,8 @@
 # package maintainers to append LDFLAGS
 #export DEB_LDFLAGS_MAINT_APPEND = -Wl,--as-needed
 
-# TODO:
-# - the upstream GNUmakefile supports/encourages "out-of-tree" builds.
-#   Should we make use of that?
-
 # N.B. @version@ will be replaced by ../build-deb
 export GIT_DESCRIPTION=@version@-deb
 
 %:
-	dh $@
+	dh $@ --builddir 
