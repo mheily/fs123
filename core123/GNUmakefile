@@ -144,7 +144,7 @@ ut_diagtime_flood.out: ut_diagtime_flood
 	DIAG_OPTS=flood ./$< > $@.tmp 2>&1 && mv $@.tmp $@
 
 ut_configparser.out: ut_configparser testconfigparser
-	TESTDATA=$(top/)/ut/testdata ./$< > $@.tmp 2>&1 && mv $@.tmp $@
+	TESTDATA=$(top/)ut/testdata ./$< > $@.tmp 2>&1 && mv $@.tmp $@
 
 # One of elastic_threadpool's possible failure modes (now believed
 # fixed!) is that it closes all worker threads and never services the
@@ -161,7 +161,7 @@ export prefix?=/usr
 export includedir?=$(prefix)/include
 .PHONY: install
 install:
-	mkdir -p $(DESTDIR)/$(includedir)/core123
+	mkdir -p $(DESTDIR)$(includedir)/core123
 	cp -a $(top/)include/core123/* $(DESTDIR)$(includedir)/core123
 
 # Special cases for specific unit tests:

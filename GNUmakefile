@@ -18,7 +18,7 @@
 mkfile_path := $(word $(words $(MAKEFILE_LIST)),$(MAKEFILE_LIST))
 top/ := $(dir $(mkfile_path))
 abstop/ := $(realpath $(top/))/
-VPATH=$(top/)lib:$(top/)fs123p7:$(top/)examples:$(top/)/testserver
+VPATH=$(top/)lib:$(top/)fs123p7:$(top/)examples:$(top/)testserver
 # Link with $(CXX), not $(CC)!
 LINK.o = $(CXX) $(LDFLAGS) $(TARGET_ARCH)
 
@@ -164,7 +164,7 @@ install : $(binaries) $(libs)
 	ln -s -f $(bindir)/fs123p7 $(DESTDIR)$(sbindir)/mount.fs123p7
 	cp -a $(libs) $(DESTDIR)$(libdir)
 	cp -a $(top/)include/fs123 $(DESTDIR)$(includedir)
-	$(MAKE) -f $(top/)/core123/GNUmakefile install
+	$(MAKE) -f $(top/)core123/GNUmakefile install
 
 # <autodepends from http://make.mad-scientist.net/papers/advanced-auto-dependency-generation>
 # Modified to work with CSRCS and CPPSRCS instead of just SRCS...
