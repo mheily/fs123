@@ -2,22 +2,14 @@
 # Packaging tools (e.g., debhelper) like configure scripts.  Let's
 # keep this one AS SIMPLE AS POSSIBLE!  All it does is create
 # a GNUmakefile in the cwd.
-#
-# Note that the unmodified GNUmakefile in the source tree "just
-# works", so we take care not to overwrite it.  For an in-tree build
-# (that leaves a lot of clutter), just do:
-#   $ make ...
-# For an out-of-tree build, do EITHER:
-#   $ path/to/this/configure
-#   $ make ...
-# OR
-#   $ make -f path/to/this/GNUmakefile ...
+
 srcdir=$(dirname "$0")
-if ! [ "$srcdir/GNUmakefile" -ef GNUmakefile ]; then
-    cat > GNUmakefile <<EOF 
-### DO NOT EDIT ###
-### This file was created by $srcdir/configure ###
-created_by_configure:=yes    
-EOF
-    sed "s/@@srcdir@@/$srcdir/" "$srcdir/GNUmakefile" >> GNUmakefile
+if [ "$srcdir/GNUmakefile" -ef GNUmakefile ]; then
+    echo 1>&2 'GNUmakefile - exists (running in srcdir)'
+    exit 0
 fi  
+cat > GNUmakefile <<EOF 
+### DO NOT EDIT.  CREATED BY $srcdir/configure ###
+include $srcdir/GNUmakefile
+EOF
+echo 1>&2 'GNUmakefile - created'

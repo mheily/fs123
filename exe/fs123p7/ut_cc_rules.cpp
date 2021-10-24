@@ -10,8 +10,11 @@ using namespace core123;
 
 void check(const std::string& cc, time_t age, const std::string& expected){
     struct stat sb{};
-    sb.st_mtime = sew::time(nullptr) - age;
-    std::string result = cc_rule_cache::bounded_max_age(cc, sb);
+    std::string result;
+    do{
+        sb.st_mtime = sew::time(nullptr) - age;
+        result = cc_rule_cache::bounded_max_age(cc, sb);
+    }while(sb.st_mtime != sew::time(nullptr) - age); // try again if the clock ticked
     EQUAL(result, expected);
 }
 

@@ -15,12 +15,7 @@
 # See http://make.mad-scientist.net/papers/multi-architecture-builds/
 # for a possible alternative...
 .SECONDARY:
-ifeq ($(origin created_by_configure), undefined)
-# Assume we're running in the source tree.
 top/ := $(dir $(word $(words $(MAKEFILE_LIST)),$(MAKEFILE_LIST)))
-else
-top/ := @@srcdir@@/
-endif
 abstop/ := $(realpath $(top/))/
 VPATH=$(top/)lib:$(top/)exe/fs123p7:$(top/)exe/examples:$(top/)exe/testserver
 # Link with $(CXX), not $(CC)!
