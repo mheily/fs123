@@ -266,6 +266,7 @@ export FS123_TEST_WITH_VALGRIND
 rm -f $RCroot/portfile
 $RCroot/run &
 serverpid=$!
+sleep 2
 if ! [ -f $RCroot/portfile ]; then
     echo No portfile immediately after starting server.  Sleep and check again...
     sleep 10
@@ -295,30 +296,10 @@ while :; do
     fi
 done
     
-# We can finally run tests...
-# N.B.  run the tests in modification-time order.  The
-# tests are independent, so it shouldn't matter what order
-# we run them.  But it's nice during development to run
-# the one we're "working  on" first.
-# BUT fiddling with the order could expose a heisenbug.
-# If it does, we'd like to know what order we happened to
-# pick.
-tests=$(ls -t $testdir/t-*[a-zA-Z0-9])
-# For example, to run in a particular order:
-#tests=$(sed "s@ @ $testdir/@g" <<< " t-14ccrules t-15cornercases t-16logrotate t-17sigusr2 t-01simple t-02disconnected t-03readdir t-05unittests t-06xattr t-07modified t-08estale t-09w2r t-10lsroot t-11showcache t-12swrcache")
-#garden prepend-path PATH $MTroot/sbin
-
-PATH=$MTroot/sbin:$PATH
-echo Running tests in this order: $(sed s!$testdir/!!g <<< $tests)
+# We can finally run tests...  Use make to run most of them in parallel
 failed=
-for f in $tests; do
-    if [ -x "$f" ]; then
-        echo Running $f at $(date +'%Y%m%d %H:%M:%S')
-        /usr/bin/time $f || { echo $f FAILED 1>&2 ; failed+=" $f"; }
-    else
-        echo $f is not executable.  Skipped.
-    fi
-done
+make -f $testdir/tests.mk -B -j partests || failed+=" partests"
+make -f $testdir/tests.mk -B seqtests || failed+=" seqtests"
 
 echo '>>>' Final client statistics
 cat $MTPT/.fs123_statistics

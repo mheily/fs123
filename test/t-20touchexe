@@ -14,9 +14,9 @@ me=$(basename $0)
 dir=$(cd $EXPORT_ROOT && mktemp -d -p. $me.XXXXXX)
 exportdir=$EXPORT_ROOT/$dir
 mtdir=$MTPT/$dir
-: ${TOUCHEXE_HOWMANY:=80}
+: ${TOUCHEXE_HOWMANY:=40}
 : ${TOUCHEXE_DELAY:=3}
-# 80 * 3 * 0.5 =approx 2 minutes
+# 40 * 3 * 0.5 =approx 1 minute
 
 # populate the exportdir.  We know there's a /bin/bash because
 # the #! at the top of the file invokes it.  So let's use that.

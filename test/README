@@ -9,11 +9,17 @@ Testing is tricky.
 
   runtests starts an fs123p7exportd server and a mount.fs123p7 client.
 
-- We need the actual tests.  See ./t-*
+- We need the actual tests.  See ./t-* and tseq-*
 
-The t-* tests can and should assume that some environment variables
+All tests can and should assume that some environment variables
 have been set (all of which are stored in c/runenv):
 
 EXPORT_ROOT
 MTPT
 
+The t-* tests are assumed to be runnable in parallel.  I.e., they
+shouldn't reconfigure the client or server.
+
+On the other hand, the tseq-* test are not runnable in parallel.  They
+may reconfigure the client or server, but they must put everything
+back the way they found it when they are done.
