@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  server:
+    image: fs123rs:latest
+    volumes:
+      - ./:/src
+      - server-target:/src/target
+    ports:
+      - 8123:8123
+    init: true
+    entrypoint: /src/target/debug/fs123-server --bind 0.0.0.0:8123
+
+  client:
+    image: fs123rs:latest
+    privileged: true
+    devices:
+      - /dev/fuse:/dev/fuse
+    volumes:
+      - ./:/src
+      - client-target:/src/target
+    init: true
+    entrypoint: /src/target/debug/fs123-mount -H server -p 8123 /mnt
+
+volumes:
+  server-target:
+  client-target:

@@ -1,0 +1,6 @@
+#!/bin/bash
+
+if ! [ -d legacy ] ; then
+	mkdir legacy
+	git archive master | tar -C legacy/ -xf -
+fi

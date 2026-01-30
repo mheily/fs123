@@ -1,0 +1,11 @@
+[package]
+name = "fs123-core"
+version = "0.1.0"
+edition = "2021"
+description = "Core fs123 protocol types and client implementation"
+
+[dependencies]
+libc = "0.2"
+percent-encoding = "2"
+ureq = { version = "2", features = ["native-tls"] }
+thiserror = "1"

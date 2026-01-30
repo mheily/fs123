@@ -1,0 +1,7 @@
+.idea/
+
+# Auto-generated files
+Cargo.lock
+crates/*/target/
+target/
+legacy/
