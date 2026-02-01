@@ -91,6 +91,18 @@ impl<T: Clone> CacheEntry<T> {
             revalidating: false,
         }
     }
+
+    /// Get the current state of this cache entry
+    /// Considers both time-based staleness and revalidation status
+    pub fn state(&self) -> CacheState {
+        let base_state = self.metadata.state();
+        // If data is Stale and revalidation is in progress, return StaleRevalidating
+        if base_state == CacheState::Stale && self.revalidating {
+            CacheState::StaleRevalidating
+        } else {
+            base_state
+        }
+    }
 }
 
 /// Cached attribute data (from /a endpoint)
@@ -198,7 +210,7 @@ impl Fs123Cache {
     pub fn get_attr(&self, path: &str) -> Option<CachedAttributes> {
         let attrs = self.attrs.read();
         if let Some(entry) = attrs.get(path) {
-            match entry.metadata.state() {
+            match entry.state() {
                 CacheState::Fresh => {
                     debug!("Cache hit (fresh): attr for {}", path);
                     return Some(entry.data.clone());
@@ -281,7 +293,7 @@ impl Fs123Cache {
     pub fn get_dir(&self, path: &str) -> Option<CachedDirectory> {
         let dirs = self.dirs.read();
         if let Some(entry) = dirs.get(path) {
-            match entry.metadata.state() {
+            match entry.state() {
                 CacheState::Fresh => {
                     debug!("Cache hit (fresh): dir for {}", path);
                     return Some(entry.data.clone());
@@ -342,7 +354,7 @@ impl Fs123Cache {
     pub fn get_symlink(&self, path: &str) -> Option<String> {
         let symlinks = self.symlinks.read();
         if let Some(entry) = symlinks.get(path) {
-            match entry.metadata.state() {
+            match entry.state() {
                 CacheState::Fresh => {
                     debug!("Cache hit (fresh): symlink for {}", path);
                     return Some(entry.data.target.clone());
