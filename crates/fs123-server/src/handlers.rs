@@ -59,10 +59,9 @@ pub async fn handle_attributes(request: Fs123Request, config: &ServerConfig) -> 
                 .max_age(config.default_max_age)
                 .stale_while_revalidate(config.default_stale_while_revalidate);
 
-            // Add estalecookie for regular files and directories
-            if attr.is_file || attr.is_dir {
-                builder = builder.estalecookie(attr.estalecookie);
-            }
+            // Always add estalecookie - use the actual value for files/dirs,
+            // 0 for symlinks (matching C++ server behavior for compatibility)
+            builder = builder.estalecookie(attr.estalecookie);
 
             builder.build()
         }
