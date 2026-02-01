@@ -21,11 +21,6 @@ Requirements to build this software:
 ./configure
 ```
 
-Build the image.
-```
-docker build -t fs123rs:latest .
-```
-
 Start the containers.
 
 ```

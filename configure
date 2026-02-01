@@ -10,5 +10,7 @@ if ! [ -e legacy/Dockerfile ] ; then
   ln $(pwd)/Dockerfile.legacy legacy/Dockerfile
 fi
 
+docker build -t fs123rs:latest .
+
 cd legacy
 docker build -t fs123cpp:latest .
