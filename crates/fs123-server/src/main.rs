@@ -2,6 +2,7 @@ use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer};
 use clap::Parser;
 use fs123_core::parse_url;
 use fs123_server::{backends, handlers, ServerConfig};
+use url::Url;
 
 #[derive(Parser, Debug)]
 #[command(name = "fs123-server")]
@@ -71,8 +72,31 @@ async fn handle_request(req: HttpRequest, config: web::Data<ServerConfig>) -> Ht
 async fn main() -> std::io::Result<()> {
     let args = Args::parse();
 
-    // Create backend from export_root URL
-    let backend = backends::create_backend(&args.export_root)
+    // Parse export_root as URL
+    // If it's a bare path (starts with / or ./), convert to file:// URL
+    let url_str = if args.export_root.starts_with('/') {
+        // Absolute path - convert to file:// URL
+        format!("file://{}", args.export_root)
+    } else if args.export_root.starts_with("./") || args.export_root.starts_with("../") {
+        // Relative path - convert to file:// URL
+        format!("file://{}", args.export_root)
+    } else if args.export_root.contains("://") {
+        // Already a URL
+        args.export_root.clone()
+    } else {
+        // Assume it's a relative path
+        format!("file://{}", args.export_root)
+    };
+
+    let url = Url::parse(&url_str).map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("Invalid URL '{}': {}", url_str, e),
+        )
+    })?;
+
+    // Create backend from parsed URL
+    let backend = backends::create_backend(&url)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
 
     let config = ServerConfig {
