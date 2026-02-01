@@ -4,3 +4,11 @@ if ! [ -d legacy ] ; then
 	mkdir legacy
 	git archive master | tar -C legacy/ -xf -
 fi
+
+if ! [ -e legacy/Dockerfile ] ; then
+  # Use a hard link so it will be accessible inside the build context
+  ln $(pwd)/Dockerfile.legacy legacy/Dockerfile
+fi
+
+cd legacy
+docker build -t fs123cpp:latest .

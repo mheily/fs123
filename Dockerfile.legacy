@@ -1,0 +1,20 @@
+FROM ubuntu:20.04
+ARG DEBIAN_FRONTEND=noninteractive
+
+# Install necessary packages (including build tools and OpenSSL development headers)
+RUN apt update && apt install -y \
+  build-essential fuse libfuse-dev libsodium-dev \
+  libcurl4-openssl-dev libevent-dev libssl-dev zlib1g-dev libdw-dev \
+  git valgrind time attr curl python3 strace tini
+
+RUN mkdir /src
+
+COPY / /src/
+
+WORKDIR /src
+
+RUN mkdir build && cd build && make -f ../GNUmakefile all install
+
+ENTRYPOINT ["/usr/bin/tini", "/usr/bin/sleep", "--", "86400"]
+# TODO:
+# fs123p7 exportd --daemonize=false --bind_addr=0.0.0.0 --port=8123 --log-destination=%stdout
