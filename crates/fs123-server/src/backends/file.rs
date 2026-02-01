@@ -12,15 +12,41 @@ use super::types::{
     StatfsInfo,
 };
 
+/// Strategy for computing ESTALE cookies
+/// Corresponds to C++ exportd_options::esc_source_e
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EstaleCookieSource {
+    /// Use FS_IOC_GETVERSION ioctl (recommended for ext3/ext4/xfs/btrfs)
+    GetVersionIoctl,
+    /// Use extended attribute user.fs123.estalecookie
+    ExtendedAttribute,
+    /// Use inode number (st_ino) - not recommended, inodes can be reused
+    Inode,
+    /// Return 0 (disabled) - only for immutable filesystems
+    None,
+}
+
 /// Backend implementation that serves files from the local filesystem
 pub struct FileBackend {
     root: PathBuf,
+    estalecookie_src: EstaleCookieSource,
 }
 
 impl FileBackend {
     /// Create a new FileBackend with the given root directory
     pub fn new(root: PathBuf) -> Self {
-        FileBackend { root }
+        FileBackend {
+            root,
+            estalecookie_src: EstaleCookieSource::GetVersionIoctl,
+        }
+    }
+
+    /// Create a new FileBackend with specified ESTALE cookie strategy
+    pub fn with_estale_strategy(root: PathBuf, estalecookie_src: EstaleCookieSource) -> Self {
+        FileBackend {
+            root,
+            estalecookie_src,
+        }
     }
 
     /// Resolve a request path to a full filesystem path
@@ -36,11 +62,77 @@ impl FileBackend {
         mtime.duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() as u64
     }
 
-    /// Get estalecookie for a file
-    /// For now, use inode number (note: not ideal, see CLAUDE.md)
-    /// TODO: Use FS_IOC_GETVERSION or extended attributes
-    fn get_estalecookie(metadata: &fs::Metadata) -> u64 {
-        metadata.ino()
+    /// Get estalecookie for a file based on the configured strategy
+    ///
+    /// # Arguments
+    /// * `path` - Full filesystem path (for opening file when needed)
+    /// * `metadata` - File metadata
+    ///
+    /// # Returns
+    /// A 64-bit cookie that changes when the inode at this path is replaced
+    fn get_estalecookie(&self, path: &std::path::Path, metadata: &fs::Metadata) -> u64 {
+        match self.estalecookie_src {
+            EstaleCookieSource::GetVersionIoctl => {
+                // Use FS_IOC_GETVERSION ioctl to get filesystem generation counter
+                // This is the recommended strategy for ext3/ext4/xfs/btrfs
+                #[cfg(target_os = "linux")]
+                {
+                    use std::os::unix::io::AsRawFd;
+
+                    // FS_IOC_GETVERSION requires a file descriptor
+                    // Open the file (using O_RDONLY, O_NOFOLLOW to avoid following symlinks)
+                    match std::fs::File::open(path) {
+                        Ok(file) => {
+                            let fd = file.as_raw_fd();
+                            let mut generation: libc::c_ulong = 0;
+
+                            // FS_IOC_GETVERSION is defined as _IOR('v', 1, long)
+                            // The value is 0x80087601 on most systems
+                            const FS_IOC_GETVERSION: libc::c_ulong = 0x80087601;
+
+                            unsafe {
+                                if libc::ioctl(fd, FS_IOC_GETVERSION, &mut generation) == 0 {
+                                    return generation as u64;
+                                }
+                            }
+                            // If ioctl failed, fall back to inode number
+                            // This happens on filesystems that don't support FS_IOC_GETVERSION
+                            eprintln!("FS_IOC_GETVERSION failed for {:?}, falling back to st_ino", path);
+                            metadata.ino()
+                        }
+                        Err(_) => {
+                            // If we can't open the file, fall back to inode number
+                            metadata.ino()
+                        }
+                    }
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    // FS_IOC_GETVERSION is Linux-specific, fall back to inode on other platforms
+                    eprintln!(
+                        "FS_IOC_GETVERSION not available on this platform for {:?}, using st_ino",
+                        path
+                    );
+                    metadata.ino()
+                }
+            }
+            EstaleCookieSource::ExtendedAttribute => {
+                // TODO: Implement extended attribute-based strategy
+                // This would read/write user.fs123.estalecookie xattr
+                // For now, fall back to inode number
+                eprintln!("ExtendedAttribute strategy not yet implemented, falling back to st_ino");
+                metadata.ino()
+            }
+            EstaleCookieSource::Inode => {
+                // Use inode number directly
+                // Warning: This is not ideal as inodes can be reused after files are deleted
+                metadata.ino()
+            }
+            EstaleCookieSource::None => {
+                // Return 0 - indicates immutable data (inode never changes)
+                0
+            }
+        }
     }
 }
 
@@ -57,7 +149,7 @@ impl Backend for FileBackend {
 
         let validator = Self::get_validator(&metadata);
         let estalecookie = if is_file || is_dir {
-            Self::get_estalecookie(&metadata)
+            self.get_estalecookie(&full_path, &metadata)
         } else {
             0
         };
@@ -109,7 +201,7 @@ impl Backend for FileBackend {
         Ok(FileContent {
             data,
             validator: Self::get_validator(&metadata),
-            estalecookie: Self::get_estalecookie(&metadata),
+            estalecookie: self.get_estalecookie(&full_path, &metadata),
         })
     }
 
@@ -166,8 +258,9 @@ impl Backend for FileBackend {
             };
 
             // Get estalecookie (use symlink_metadata to not follow symlinks)
-            let estalecookie = match entry.path().symlink_metadata() {
-                Ok(meta) => Self::get_estalecookie(&meta),
+            let entry_path = entry.path();
+            let estalecookie = match entry_path.symlink_metadata() {
+                Ok(meta) => self.get_estalecookie(&entry_path, &meta),
                 Err(_) => 0,
             };
 
@@ -197,7 +290,7 @@ impl Backend for FileBackend {
         Ok(DirectoryListing {
             entries,
             nextstart,
-            estalecookie: Self::get_estalecookie(&metadata),
+            estalecookie: self.get_estalecookie(&full_path, &metadata),
         })
     }
 

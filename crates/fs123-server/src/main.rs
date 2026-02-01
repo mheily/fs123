@@ -11,7 +11,12 @@ struct Args {
     #[arg(short, long, default_value = "127.0.0.1:8123")]
     bind: String,
 
-    /// Root directory or URL to export (e.g., /path or file:///path)
+    /// Root directory or URL to export (e.g., /path, file:///path, or file:///path?estalecookie=inode)
+    /// URL parameters:
+    ///   estalecookie=ioc_getversion (default) - Use FS_IOC_GETVERSION ioctl
+    ///   estalecookie=xattr - Use extended attributes (not yet implemented)
+    ///   estalecookie=inode - Use inode number (not recommended)
+    ///   estalecookie=none - Disabled (return 0)
     #[arg(short, long, default_value = "/srv/fs123")]
     export_root: String,
 
@@ -67,9 +72,8 @@ async fn main() -> std::io::Result<()> {
     let args = Args::parse();
 
     // Create backend from export_root URL
-    let backend = backends::create_backend(&args.export_root).map_err(|e| {
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, e)
-    })?;
+    let backend = backends::create_backend(&args.export_root)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
 
     let config = ServerConfig {
         backend,
