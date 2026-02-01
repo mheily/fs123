@@ -39,3 +39,9 @@ View the contents of the mounted fs123 filesystem.
 # ls /mnt
 hello.txt  hello2.txt
 ```
+
+Run all tests:
+
+```
+docker-compose exec client cargo test --workspace -- --include-ignored --test-threads=1
+```
