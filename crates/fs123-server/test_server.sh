@@ -2,11 +2,11 @@
 set -e
 
 # Setup test files
-mkdir -p /tmp/fs123-export/testdir
-echo "Hello from fs123!" > /tmp/fs123-export/test.txt
-echo "File in subdir" > /tmp/fs123-export/testdir/file.txt
+mkdir -p /srv/fs123/testdir
+echo "Hello from fs123!" > /srv/fs123/test.txt
+echo "File in subdir" > /srv/fs123/testdir/file.txt
 echo "Setup complete: created test files"
-ls -la /tmp/fs123-export/
+ls -la /srv/fs123/
 
 # Start server in background
 echo "Starting server..."

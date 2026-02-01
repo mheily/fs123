@@ -22,10 +22,10 @@ cargo test
 
 ```bash
 # Create a directory to export
-mkdir -p /tmp/fs123-export
-echo "Hello, World!" > /tmp/fs123-export/test.txt
+mkdir -p /srv/fs123
+echo "Hello, World!" > /srv/fs123/test.txt
 
-# Run the server (exports /tmp/fs123-export by default)
+# Run the server (exports /srv/fs123 by default)
 cargo run
 ```
 

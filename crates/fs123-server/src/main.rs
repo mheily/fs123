@@ -12,7 +12,7 @@ struct Args {
     bind: String,
 
     /// Root directory or URL to export (e.g., /path or file:///path)
-    #[arg(short, long, default_value = "/tmp/fs123-export")]
+    #[arg(short, long, default_value = "/srv/fs123")]
     export_root: String,
 
     /// Default max-age for Cache-Control header (seconds)

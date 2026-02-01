@@ -13,12 +13,7 @@ RUN apt update && apt install -y \
     wget \
     xxd
 
-# Make a small set of test files for exporting
-RUN bash -ex -c " \
-    mkdir -p /tmp/fs123-export ; \
-    cd /tmp/fs123-export ; \
-    echo 'hi' > hello.txt ; \
-    ln -s hello.txt hello2.txt"
+RUN install -d -m 755 /srv/fs123
 
 COPY / /src/
 

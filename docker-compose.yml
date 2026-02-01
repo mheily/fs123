@@ -6,6 +6,7 @@ services:
     volumes:
       - ./:/src
       - server-target:/src/target
+      - server-export:/srv/fs123
     ports:
       - 8123:8123
     init: true
@@ -36,5 +37,6 @@ services:
 
 volumes:
   server-target:
+  server-export:
   client-target:
   legacy:
