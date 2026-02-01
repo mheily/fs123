@@ -10,7 +10,7 @@ services:
     ports:
       - 8123:8123
     init: true
-    entrypoint: /src/target/debug/fs123-server --bind 0.0.0.0:8123
+    entrypoint: /src/target/debug/fs123-server --bind 0.0.0.0:8123 --max-age 3 --stale-while-revalidate 3
 
   client:
     image: fs123rs:latest
@@ -30,10 +30,15 @@ services:
       - SYS_ADMIN
     devices:
       - /dev/fuse:/dev/fuse
+    environment:
+      EXPORT_ROOT: /srv/fs123
+      MTPT: /mnt
+      PATH: /src/build:/bin:/usr/bin:/sbin:/usr/sbin
     volumes:
       - legacy:/build
-    #init: true
-    #entrypoint: /src/target/debug/fs123-mount -H server -p 8123 /mnt
+      - server-export:/srv/fs123
+    init: true
+    entrypoint: /usr/sbin/mount.fs123p7 -f http://server:8123/ /mnt
 
 volumes:
   server-target:

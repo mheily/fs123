@@ -1,0 +1,1 @@
+docker-compose exec legacy /src/test/t-08estale

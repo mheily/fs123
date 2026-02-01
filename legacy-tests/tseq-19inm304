@@ -1,0 +1,1 @@
+docker-compose exec legacy /src/test/tseq-19inm304
