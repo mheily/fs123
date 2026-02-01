@@ -77,11 +77,17 @@ fs123-server --export-root "/srv/data?estalecookie=inode&other_param=value"
 2. `crates/fs123-server/src/backends/mod.rs`:
    - Exported `EstaleCookieSource`
    - Added `parse_estale_cookie_source()` helper
-   - Modified `create_backend()` to parse URL parameters
+   - Modified `create_backend()` to accept `&Url` instead of `&str`
+   - Uses `url` crate for proper URL parsing and query parameter handling
    - Added tests for URL parameter parsing
 
 3. `crates/fs123-server/src/main.rs`:
    - Updated documentation for `--export-root` to describe URL parameters
+   - Added URL parsing logic to convert bare paths to file:// URLs
+   - Imports and uses `url::Url` for URL handling
+
+4. `crates/fs123-server/Cargo.toml`:
+   - Added `url = "2"` dependency
 
 ### Comparison to C++
 

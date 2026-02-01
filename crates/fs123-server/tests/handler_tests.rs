@@ -1,26 +1,4 @@
 /// Tests for handler functions with query parameter parsing
-use std::fs;
-use std::path::PathBuf;
-
-// Helper to create test files
-fn setup_test_dir() -> PathBuf {
-    let test_dir = PathBuf::from("/tmp/fs123-handler-test");
-    if test_dir.exists() {
-        fs::remove_dir_all(&test_dir).ok();
-    }
-    fs::create_dir_all(&test_dir).unwrap();
-
-    // Create test file
-    fs::write(test_dir.join("testfile.txt"), b"Hello, World! This is a test file with some content.").unwrap();
-
-    // Create subdirectory
-    let subdir = test_dir.join("subdir");
-    fs::create_dir_all(&subdir).unwrap();
-    fs::write(subdir.join("file1.txt"), b"File 1").unwrap();
-    fs::write(subdir.join("file2.txt"), b"File 2").unwrap();
-
-    test_dir
-}
 
 #[test]
 fn test_query_param_parsing_in_context() {

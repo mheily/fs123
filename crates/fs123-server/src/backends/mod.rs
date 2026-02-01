@@ -62,7 +62,7 @@ pub fn create_backend(url: &Url) -> Result<Arc<dyn Backend>, String> {
     let mut estalecookie_src = EstaleCookieSource::GetVersionIoctl; // Default
     for (key, value) in url.query_pairs() {
         if key == "estalecookie" {
-            estalecookie_src = parse_estale_cookie_source(&value)?;
+            estalecookie_src = parse_estale_cookie_source(value.as_ref())?;
         }
     }
 
@@ -70,8 +70,7 @@ pub fn create_backend(url: &Url) -> Result<Arc<dyn Backend>, String> {
     match url.scheme() {
         "file" => {
             // For file:// URLs, the path() method returns the path
-            let path = url.path();
-            let path_buf = PathBuf::from(path);
+            let path_buf = PathBuf::from(url.path());
             let backend = FileBackend::with_estale_strategy(path_buf, estalecookie_src);
             Ok(Arc::new(backend))
         }
