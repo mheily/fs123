@@ -27,6 +27,7 @@ fs123-rs/
 **Server (`crates/fs123-server`)**:
 - **Language**: Rust
 - **Web Framework**: actix-web
+- **Backend Abstraction**: Pluggable storage backends via async trait
 - **Testing**: Unit tests using synchronous HTTP requests
 
 **FUSE Client (`crates/fs123-client`)**:
@@ -135,6 +136,13 @@ Cache Options:
 
 The server responds to HTTP GET requests following the fs123 protocol specification (version 7.3, with backward compatibility for 7.2).
 
+**Modules**:
+- `main.rs` - CLI with clap, actix-web server setup
+- `lib.rs` - `ServerConfig` and module exports
+- `handlers.rs` - Protocol endpoint handlers (`handle_attributes`, `handle_file_read`, etc.)
+- `response.rs` - `Fs123ResponseBuilder` for constructing netstring responses
+- `backends/` - Backend abstraction layer (see Backend Abstraction Layer section)
+
 **Protocol Endpoints** - Each corresponds to a filesystem operation:
 - `/a` - Attributes (returns stat information for a path)
 - `/d` - Directory listing (returns directory entries)
@@ -162,6 +170,83 @@ Where:
 - FUNCTION: Single letter endpoint (`a`, `d`, `f`, `l`, `s`, `x`, `n`, `p`)
 - PATH: Path relative to export root
 - QUERY: Semicolon-separated parameters (function-specific, not key-value pairs)
+
+### Backend Abstraction Layer
+
+The server uses a pluggable backend architecture that abstracts storage operations behind the `Backend` trait. This allows the server to serve files from sources other than the local filesystem.
+
+**Architecture** (`src/backends/`):
+```
+backends/
+├── mod.rs        # Module exports and create_backend() factory
+├── traits.rs     # Backend trait definition
+├── types.rs      # Shared types (AttributeInfo, DirEntry, etc.)
+└── file.rs       # FileBackend implementation
+```
+
+**Backend Trait** (`Backend`):
+All backend implementations must provide these async methods:
+- `get_attributes(&self, path: &str) -> BackendResult<AttributeInfo>` - Get stat-like info
+- `read_file(&self, path: &str, offset: u64, length: usize) -> BackendResult<FileContent>` - Read file content
+- `read_directory(&self, path: &str, max_bytes: usize, start_after: &str) -> BackendResult<DirectoryListing>` - List directory
+- `read_symlink(&self, path: &str) -> BackendResult<String>` - Read symlink target
+- `statfs(&self, path: &str) -> BackendResult<StatfsInfo>` - Get filesystem statistics
+- `get_xattr(&self, path: &str, name: &str, max_size: usize) -> BackendResult<Vec<u8>>` - Get extended attribute
+- `describe(&self) -> String` - Return human-readable backend description
+
+**Shared Types** (`types.rs`):
+- `AttributeInfo` - File/directory stat information (mode, nlink, uid, gid, size, timestamps, validator, estalecookie)
+- `DirEntry` - Single directory entry (name, d_type, estalecookie)
+- `DirectoryListing` - Directory read result (entries, nextstart cursor, estalecookie)
+- `FileContent` - File read result (data, validator, estalecookie)
+- `StatfsInfo` - Filesystem statistics (blocks, files, namemax, etc.)
+- `BackendError` - Error with errno (for POSIX error codes)
+- `BackendResult<T>` - Result type alias
+
+**FileBackend** (`file.rs`):
+The local filesystem backend implementation:
+- Serves files from a root directory on the local filesystem
+- Uses `fs::symlink_metadata()` for attribute operations
+- Implements validator using `mtime` nanoseconds
+- Implements estalecookie using inode number (TODO: use `FS_IOC_GETVERSION`)
+- Handles path resolution by joining request paths with the root directory
+
+**Backend Factory** (`create_backend()`):
+The `create_backend(url: &str)` factory function creates backends from URL strings:
+- `file:///path` or `/path` → Creates `FileBackend` with the given path
+- Bare paths default to `file://` scheme
+- Returns `Result<Arc<dyn Backend>, String>` for error handling
+- Extensible for future backends (e.g., `s3://`, `http://`)
+
+**Server Configuration**:
+`ServerConfig` holds an `Arc<dyn Backend>` instead of a direct filesystem path:
+```rust
+pub struct ServerConfig {
+    pub backend: Arc<dyn Backend>,
+    pub default_max_age: u32,
+    pub default_stale_while_revalidate: u32,
+}
+```
+
+**CLI Usage**:
+```bash
+fs123-server --export-root <URL> [options]
+
+# Examples:
+fs123-server --export-root /srv/data
+fs123-server --export-root file:///srv/data
+```
+
+**Handler Integration**:
+All protocol endpoint handlers (`handle_attributes`, `handle_file_read`, etc.) call the configured backend methods instead of direct filesystem operations. This keeps handler logic independent of storage implementation.
+
+**Future Backends**:
+The abstraction enables future storage backends such as:
+- S3 or object storage backends
+- Database backends
+- HTTP proxy backends (chain multiple fs123 servers)
+- Caching or overlay backends
+- Virtual or synthetic filesystems
 
 ### Response Format
 

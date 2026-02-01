@@ -1,8 +1,7 @@
-use actix_web::{web, App, HttpServer, HttpRequest, HttpResponse};
+use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer};
 use clap::Parser;
 use fs123_core::parse_url;
-use fs123_server::{handlers, ServerConfig};
-use std::path::PathBuf;
+use fs123_server::{backends, handlers, ServerConfig};
 
 #[derive(Parser, Debug)]
 #[command(name = "fs123-server")]
@@ -12,9 +11,9 @@ struct Args {
     #[arg(short, long, default_value = "127.0.0.1:8123")]
     bind: String,
 
-    /// Root directory to export
+    /// Root directory or URL to export (e.g., /path or file:///path)
     #[arg(short, long, default_value = "/tmp/fs123-export")]
-    export_root: PathBuf,
+    export_root: String,
 
     /// Default max-age for Cache-Control header (seconds)
     #[arg(long, default_value = "300")]
@@ -26,10 +25,7 @@ struct Args {
 }
 
 /// Main request handler that routes to specific function handlers
-async fn handle_request(
-    req: HttpRequest,
-    config: web::Data<ServerConfig>,
-) -> HttpResponse {
+async fn handle_request(req: HttpRequest, config: web::Data<ServerConfig>) -> HttpResponse {
     // Parse the URL to extract protocol components
     // Combine path and query string to form complete URL
     let path = req.path();
@@ -40,7 +36,10 @@ async fn handle_request(
         format!("{}?{}", path, query)
     };
 
-    eprintln!("DEBUG: path='{}', query='{}', full_url='{}'", path, query, full_url);
+    eprintln!(
+        "DEBUG: path='{}', query='{}', full_url='{}'",
+        path, query, full_url
+    );
 
     match parse_url(&full_url) {
         Ok(request) => {
@@ -54,27 +53,32 @@ async fn handle_request(
                 "x" => handlers::handle_xattr(request, &config).await,
                 "n" => handlers::handle_server_stats(request, &config).await,
                 "p" => handlers::handle_passthrough(request, &config).await,
-                _ => HttpResponse::BadRequest()
-                    .body(format!("Unknown function: {}", request.function)),
+                _ => {
+                    HttpResponse::BadRequest().body(format!("Unknown function: {}", request.function))
+                }
             }
         }
-        Err(e) => {
-            HttpResponse::BadRequest().body(format!("Protocol error: {}", e))
-        }
+        Err(e) => HttpResponse::BadRequest().body(format!("Protocol error: {}", e)),
     }
 }
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     let args = Args::parse();
+
+    // Create backend from export_root URL
+    let backend = backends::create_backend(&args.export_root).map_err(|e| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, e)
+    })?;
+
     let config = ServerConfig {
-        export_root: args.export_root,
+        backend,
         default_max_age: args.max_age,
         default_stale_while_revalidate: args.stale_while_revalidate,
     };
 
     println!("Starting fs123 server on {}", args.bind);
-    println!("Export root: {:?}", config.export_root);
+    println!("Backend: {}", config.backend.describe());
 
     HttpServer::new(move || {
         App::new()
