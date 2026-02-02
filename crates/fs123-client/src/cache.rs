@@ -33,8 +33,10 @@ pub enum CacheState {
 #[derive(Debug, Clone)]
 pub struct CacheMetadata {
     /// Validator from server (changes when content changes)
+    #[allow(dead_code)]
     pub validator: u64,
     /// ESTALE cookie (changes when inode changes)
+    #[allow(dead_code)]
     pub estalecookie: u64,
     /// When this entry was cached
     pub cached_at: Instant,
@@ -59,6 +61,7 @@ impl CacheMetadata {
     }
 
     /// Check if data should be served (fresh or stale-revalidatable)
+    #[allow(dead_code)]
     pub fn is_servable(&self) -> bool {
         matches!(
             self.state(),
@@ -67,6 +70,7 @@ impl CacheMetadata {
     }
 
     /// Check if background revalidation should be triggered
+    #[allow(dead_code)]
     pub fn needs_revalidation(&self) -> bool {
         matches!(self.state(), CacheState::Stale)
     }
