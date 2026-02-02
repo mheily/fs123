@@ -21,6 +21,7 @@ pub struct InodeInfo {
     /// Reference count (number of lookups minus forgets)
     pub refcount: u64,
     /// Last known file type (for quick directory detection)
+    #[allow(unused)]
     pub file_type: u8,
 }
 
@@ -70,6 +71,7 @@ impl InodeManager {
     }
 
     /// Get the inode for a path, if it exists.
+    #[cfg(test)]
     pub fn get_ino(&self, path: &str) -> Option<u64> {
         let path_to_ino = self.path_to_ino.read().unwrap();
         path_to_ino.get(path).copied()
@@ -160,10 +162,11 @@ impl InodeManager {
     }
 
     /// Get the file type for an inode.
-    pub fn get_file_type(&self, ino: u64) -> Option<u8> {
-        let ino_to_info = self.ino_to_info.read().unwrap();
-        ino_to_info.get(&ino).map(|info| info.file_type)
-    }
+    // #[cfg(test)]
+    // pub fn get_file_type(&self, ino: u64) -> Option<u8> {
+    //     let ino_to_info = self.ino_to_info.read().unwrap();
+    //     ino_to_info.get(&ino).map(|info| info.file_type)
+    // }
 
     /// Build a child path from parent inode and name.
     pub fn child_path(&self, parent_ino: u64, name: &str) -> Option<String> {
