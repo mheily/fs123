@@ -446,7 +446,9 @@ impl Fs123Cache {
 
 /// Background refresher that processes revalidation requests
 pub struct BackgroundRefresher {
-    handles: Vec<thread::JoinHandle<()>>,
+    // Thread handles kept alive to maintain background workers
+    // Threads exit automatically when the channel is closed
+    _handles: Vec<thread::JoinHandle<()>>,
 }
 
 impl BackgroundRefresher {
@@ -473,7 +475,9 @@ impl BackgroundRefresher {
             handles.push(handle);
         }
 
-        BackgroundRefresher { handles }
+        BackgroundRefresher {
+            _handles: handles,
+        }
     }
 
     fn worker_loop(
@@ -661,13 +665,6 @@ impl BackgroundRefresher {
                 error!("Symlink revalidation failed for {}: {}", path, e);
                 cache.clear_revalidating_symlink(path);
             }
-        }
-    }
-
-    /// Shutdown the background threads
-    pub fn shutdown(self) {
-        for handle in self.handles {
-            let _ = handle.join();
         }
     }
 }
