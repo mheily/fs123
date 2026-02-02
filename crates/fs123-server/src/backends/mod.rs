@@ -3,10 +3,14 @@
 /// This module provides a `Backend` trait that abstracts filesystem operations,
 /// enabling the server to serve files from sources other than the local filesystem.
 
+#[cfg(feature = "database")]
+pub mod database;
 mod file;
 mod traits;
 mod types;
 
+#[cfg(feature = "database")]
+pub use database::DatabaseBackend;
 pub use file::{EstaleCookieSource, FileBackend};
 pub use traits::Backend;
 pub use types::{
@@ -38,6 +42,7 @@ fn parse_estale_cookie_source(s: &str) -> Result<EstaleCookieSource, String> {
 ///
 /// Supported URL schemes:
 /// - `file://` - Local filesystem backend
+/// - `sqlite://` - SQLite database backend (requires "database" feature)
 ///
 /// # URL Parameters (for file:// URLs)
 /// - `estalecookie=<strategy>` - ESTALE cookie strategy:
@@ -47,17 +52,18 @@ fn parse_estale_cookie_source(s: &str) -> Result<EstaleCookieSource, String> {
 ///   - `none` - Disabled (return 0)
 ///
 /// # Examples
-/// ```
+/// ```ignore
 /// use url::Url;
 /// use fs123_server::backends::create_backend;
 ///
 /// let url = Url::parse("file:///srv/data").unwrap();
-/// let backend = create_backend(&url).unwrap();
+/// let backend = create_backend(&url).await.unwrap();
 ///
-/// let url = Url::parse("file:///srv/data?estalecookie=inode").unwrap();
-/// let backend = create_backend(&url).unwrap();
+/// // With database feature:
+/// let url = Url::parse("sqlite:///var/lib/fs123/metadata.db").unwrap();
+/// let backend = create_backend(&url).await.unwrap();
 /// ```
-pub fn create_backend(url: &Url) -> Result<Arc<dyn Backend>, String> {
+pub async fn create_backend(url: &Url) -> Result<Arc<dyn Backend>, String> {
     // Parse query parameters
     let mut estalecookie_src = EstaleCookieSource::GetVersionIoctl; // Default
     for (key, value) in url.query_pairs() {
@@ -74,6 +80,29 @@ pub fn create_backend(url: &Url) -> Result<Arc<dyn Backend>, String> {
             let backend = FileBackend::with_estale_strategy(path_buf, estalecookie_src);
             Ok(Arc::new(backend))
         }
+
+        #[cfg(feature = "database")]
+        "sqlite" => {
+            // For sqlite:// URLs, create a database backend
+            // Convert sqlite:// to sqlite: format expected by sqlx
+            let db_url = url.as_str();
+            let backend = DatabaseBackend::new(db_url)
+                .await
+                .map_err(|e| format!("Failed to create database backend: {}", e))?;
+            backend
+                .initialize_schema()
+                .await
+                .map_err(|e| format!("Failed to initialize database schema: {}", e))?;
+            Ok(Arc::new(backend))
+        }
+
+        #[cfg(not(feature = "database"))]
+        "sqlite" => Err(
+            "SQLite backend requires the 'database' feature. \
+             Recompile with: cargo build --features database"
+                .to_string(),
+        ),
+
         scheme => Err(format!("Unsupported backend scheme: {}", scheme)),
     }
 }
@@ -82,44 +111,44 @@ pub fn create_backend(url: &Url) -> Result<Arc<dyn Backend>, String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_create_backend_file_url() {
+    #[tokio::test]
+    async fn test_create_backend_file_url() {
         let url = Url::parse("file:///tmp/test").unwrap();
-        let backend = create_backend(&url).unwrap();
+        let backend = create_backend(&url).await.unwrap();
         assert_eq!(backend.describe(), "file:///tmp/test");
     }
 
-    #[test]
-    fn test_create_backend_unsupported_scheme() {
+    #[tokio::test]
+    async fn test_create_backend_unsupported_scheme() {
         let url = Url::parse("http://example.com/path").unwrap();
-        let result = create_backend(&url);
+        let result = create_backend(&url).await;
         assert!(result.is_err());
         let err = result.err().unwrap();
         assert!(err.contains("Unsupported backend scheme"));
     }
 
-    #[test]
-    fn test_create_backend_with_estale_url_param() {
+    #[tokio::test]
+    async fn test_create_backend_with_estale_url_param() {
         // Test inode strategy via URL parameter
         let url = Url::parse("file:///tmp/test?estalecookie=inode").unwrap();
-        let backend = create_backend(&url).unwrap();
+        let backend = create_backend(&url).await.unwrap();
         assert_eq!(backend.describe(), "file:///tmp/test");
 
         // Test none strategy
         let url = Url::parse("file:///tmp/test?estalecookie=none").unwrap();
-        let backend = create_backend(&url).unwrap();
+        let backend = create_backend(&url).await.unwrap();
         assert_eq!(backend.describe(), "file:///tmp/test");
 
         // Test default (no parameter)
         let url = Url::parse("file:///tmp/test").unwrap();
-        let backend = create_backend(&url).unwrap();
+        let backend = create_backend(&url).await.unwrap();
         assert_eq!(backend.describe(), "file:///tmp/test");
     }
 
-    #[test]
-    fn test_create_backend_invalid_estale_param() {
+    #[tokio::test]
+    async fn test_create_backend_invalid_estale_param() {
         let url = Url::parse("file:///tmp/test?estalecookie=invalid").unwrap();
-        let result = create_backend(&url);
+        let result = create_backend(&url).await;
         assert!(result.is_err());
         let err = result.err().unwrap();
         assert!(err.contains("Invalid estalecookie value"));

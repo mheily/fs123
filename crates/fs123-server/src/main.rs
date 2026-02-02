@@ -97,6 +97,7 @@ async fn main() -> std::io::Result<()> {
 
     // Create backend from parsed URL
     let backend = backends::create_backend(&url)
+        .await
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
 
     let config = ServerConfig {
