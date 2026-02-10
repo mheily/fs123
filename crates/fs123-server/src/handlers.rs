@@ -732,6 +732,49 @@ pub async fn handle_removexattr(request: Fs123Request, config: &ServerConfig) ->
     }
 }
 
+/// Handle open_write - query: mode
+pub async fn handle_open_write(request: Fs123Request, config: &ServerConfig) -> HttpResponse {
+    let wb = match get_writable_backend(config) {
+        Ok(wb) => wb,
+        Err(resp) => return resp,
+    };
+    if request.query_params.is_empty() {
+        return Fs123ResponseBuilder::build_error(400, "Missing mode parameter");
+    }
+    let mode: u32 = match request.query_params[0].parse() {
+        Ok(v) => v,
+        Err(_) => return Fs123ResponseBuilder::build_error(400, "Invalid mode parameter"),
+    };
+    match wb.open_write(&request.path, mode).await {
+        Ok(()) => write_ok(),
+        Err(e) => write_err(e),
+    }
+}
+
+/// Handle write - data in request body
+pub async fn handle_write_data(request: Fs123Request, config: &ServerConfig, body: &[u8]) -> HttpResponse {
+    let wb = match get_writable_backend(config) {
+        Ok(wb) => wb,
+        Err(resp) => return resp,
+    };
+    match wb.write_data(&request.path, body).await {
+        Ok(()) => write_ok(),
+        Err(e) => write_err(e),
+    }
+}
+
+/// Handle close_write
+pub async fn handle_close_write(request: Fs123Request, config: &ServerConfig) -> HttpResponse {
+    let wb = match get_writable_backend(config) {
+        Ok(wb) => wb,
+        Err(resp) => return resp,
+    };
+    match wb.close_write(&request.path).await {
+        Ok(()) => write_ok(),
+        Err(e) => write_err(e),
+    }
+}
+
 /// Handle access - query: mask
 pub async fn handle_access(request: Fs123Request, config: &ServerConfig) -> HttpResponse {
     let wb = match get_writable_backend(config) {

@@ -46,6 +46,10 @@ pub enum Fs123Function {
     Setxattr,
     Removexattr,
     Access,
+    // v8 write-once file operations
+    OpenWrite,
+    WriteData,
+    CloseWrite,
 }
 
 impl Fs123Function {
@@ -77,6 +81,9 @@ impl Fs123Function {
             "setxattr" => Some(Self::Setxattr),
             "removexattr" => Some(Self::Removexattr),
             "access" => Some(Self::Access),
+            "open_write" => Some(Self::OpenWrite),
+            "write" => Some(Self::WriteData),
+            "close_write" => Some(Self::CloseWrite),
             _ => None,
         }
     }
@@ -109,6 +116,9 @@ impl Fs123Function {
                 Self::Setxattr => "setxattr",
                 Self::Removexattr => "removexattr",
                 Self::Access => "access",
+                Self::OpenWrite => "open_write",
+                Self::WriteData => "write",
+                Self::CloseWrite => "close_write",
             }
         } else {
             match self {
@@ -123,7 +133,8 @@ impl Fs123Function {
                 // Write operations are v8-only; no v7 mapping exists
                 Self::Mkdir | Self::Rmdir | Self::Chmod | Self::Chown |
                 Self::Utimens | Self::Symlink | Self::Link | Self::Unlink |
-                Self::Rename | Self::Setxattr | Self::Removexattr | Self::Access => "p",
+                Self::Rename | Self::Setxattr | Self::Removexattr | Self::Access |
+                Self::OpenWrite | Self::WriteData | Self::CloseWrite => "p",
             }
         }
     }

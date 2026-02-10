@@ -31,7 +31,7 @@ struct Args {
 }
 
 /// Main request handler that routes to specific function handlers
-async fn handle_request(req: HttpRequest, config: web::Data<ServerConfig>) -> HttpResponse {
+async fn handle_request(req: HttpRequest, config: web::Data<ServerConfig>, body: web::Bytes) -> HttpResponse {
     // Parse the URL to extract protocol components
     // Combine path and query string to form complete URL
     let path = req.path();
@@ -72,6 +72,9 @@ async fn handle_request(req: HttpRequest, config: web::Data<ServerConfig>) -> Ht
                 Fs123Function::Setxattr => handlers::handle_setxattr(request, &config).await,
                 Fs123Function::Removexattr => handlers::handle_removexattr(request, &config).await,
                 Fs123Function::Access => handlers::handle_access(request, &config).await,
+                Fs123Function::OpenWrite => handlers::handle_open_write(request, &config).await,
+                Fs123Function::WriteData => handlers::handle_write_data(request, &config, &body).await,
+                Fs123Function::CloseWrite => handlers::handle_close_write(request, &config).await,
             }
         }
         Err(e) => HttpResponse::BadRequest().body(format!("Protocol error: {}", e)),

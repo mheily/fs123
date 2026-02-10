@@ -119,4 +119,21 @@ pub trait WritableBackend: Send + Sync {
     async fn check_access(&self, _path: &str, _mask: u32) -> BackendResult<()> {
         Err(BackendError::new(libc::ENOSYS, "Not implemented"))
     }
+
+    /// Open a file for write-once writing.
+    /// Creates an empty file with O_CREAT|O_EXCL semantics and marks it with an xattr.
+    async fn open_write(&self, _path: &str, _mode: u32) -> BackendResult<()> {
+        Err(BackendError::new(libc::ENOSYS, "Not implemented"))
+    }
+
+    /// Append data to a file opened for writing.
+    /// Verifies the write session xattr is present before allowing writes.
+    async fn write_data(&self, _path: &str, _data: &[u8]) -> BackendResult<()> {
+        Err(BackendError::new(libc::ENOSYS, "Not implemented"))
+    }
+
+    /// Close a file opened for writing, removing the write session xattr.
+    async fn close_write(&self, _path: &str) -> BackendResult<()> {
+        Err(BackendError::new(libc::ENOSYS, "Not implemented"))
+    }
 }
