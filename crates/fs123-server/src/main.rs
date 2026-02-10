@@ -1,6 +1,6 @@
 use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer};
 use clap::Parser;
-use fs123_core::parse_url;
+use fs123_core::{parse_url, Fs123Function};
 use fs123_server::{backends, handlers, ServerConfig};
 use url::Url;
 
@@ -49,19 +49,17 @@ async fn handle_request(req: HttpRequest, config: web::Data<ServerConfig>) -> Ht
 
     match parse_url(&full_url) {
         Ok(request) => {
-            // Route to the appropriate handler based on function
-            match request.function.as_str() {
-                "a" => handlers::handle_attributes(request, &config).await,
-                "f" => handlers::handle_file_read(request, &config).await,
-                "d" => handlers::handle_directory(request, &config).await,
-                "l" => handlers::handle_symlink(request, &config).await,
-                "s" => handlers::handle_statfs(request, &config).await,
-                "x" => handlers::handle_xattr(request, &config).await,
-                "n" => handlers::handle_server_stats(request, &config).await,
-                "p" => handlers::handle_passthrough(request, &config).await,
-                _ => {
-                    HttpResponse::BadRequest().body(format!("Unknown function: {}", request.function))
-                }
+            match request.function {
+                Fs123Function::Stat => handlers::handle_attributes(request, &config).await,
+                Fs123Function::Read => handlers::handle_file_read(request, &config).await,
+                Fs123Function::Readdir => handlers::handle_directory(request, &config).await,
+                Fs123Function::Readlink => handlers::handle_symlink(request, &config).await,
+                Fs123Function::Statvfs => handlers::handle_statfs(request, &config).await,
+                Fs123Function::Xattr => handlers::handle_xattr(request, &config).await,
+                Fs123Function::Getxattr => handlers::handle_getxattr(request, &config).await,
+                Fs123Function::Listxattr => handlers::handle_listxattr(request, &config).await,
+                Fs123Function::ServerStats => handlers::handle_server_stats(request, &config).await,
+                Fs123Function::Passthrough => handlers::handle_passthrough(request, &config).await,
             }
         }
         Err(e) => HttpResponse::BadRequest().body(format!("Protocol error: {}", e)),

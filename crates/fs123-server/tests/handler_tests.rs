@@ -8,7 +8,7 @@ fn test_query_param_parsing_in_context() {
     let url = "/fs123/7/3/f/testfile.txt?1;0";
     let req = parse_url(url).unwrap();
 
-    assert_eq!(req.function, "f");
+    assert_eq!(req.function, fs123_core::Fs123Function::Read);
     assert_eq!(req.path, "/testfile.txt");
     assert_eq!(req.query_params.len(), 2);
     assert_eq!(req.query_params[0], "1");
@@ -28,7 +28,7 @@ fn test_directory_query_params() {
     let url = "/fs123/7/3/d/mydir?64;lastfile";
     let req = parse_url(url).unwrap();
 
-    assert_eq!(req.function, "d");
+    assert_eq!(req.function, fs123_core::Fs123Function::Readdir);
     assert_eq!(req.query_params.len(), 2);
     assert_eq!(req.query_params[0], "64");
     assert_eq!(req.query_params[1], "lastfile");
@@ -41,7 +41,7 @@ fn test_xattr_query_params() {
     let url = "/fs123/7/3/x/file?128;user.myattr;";
     let req = parse_url(url).unwrap();
 
-    assert_eq!(req.function, "x");
+    assert_eq!(req.function, fs123_core::Fs123Function::Xattr);
     assert_eq!(req.query_params.len(), 3);
     assert_eq!(req.query_params[0], "128");
     assert_eq!(req.query_params[1], "user.myattr");
@@ -75,7 +75,7 @@ fn test_full_request_pipeline() {
 
     // Step 1: Parse URL
     let req = parse_url(url).unwrap();
-    assert_eq!(req.function, "f");
+    assert_eq!(req.function, fs123_core::Fs123Function::Read);
     assert_eq!(req.path, "/testfile.txt");
 
     // Step 2: Validate query parameters (like handler does)
@@ -116,4 +116,64 @@ fn test_edge_cases() {
     let req = parse_url("/fs123/7/3/f/deep/nested/path/file.txt?128;64").unwrap();
     assert_eq!(req.path, "/deep/nested/path/file.txt");
     assert_eq!(req.query_params.len(), 2);
+}
+
+#[test]
+fn test_v8_protocol_parsing() {
+    use fs123_core::parse_url;
+
+    // Test v8 stat endpoint
+    let req = parse_url("/fs123/8/0/stat/testfile.txt").unwrap();
+    assert_eq!(req.major_version, 8);
+    assert_eq!(req.minor_version, 0);
+    assert_eq!(req.function, fs123_core::Fs123Function::Stat);
+    assert_eq!(req.path, "/testfile.txt");
+
+    // Test v8 read endpoint
+    let req = parse_url("/fs123/8/0/read/testfile.txt?1;0").unwrap();
+    assert_eq!(req.function, fs123_core::Fs123Function::Read);
+    assert_eq!(req.query_params, vec!["1", "0"]);
+
+    // Test v8 readdir endpoint
+    let req = parse_url("/fs123/8/0/readdir/mydir?64").unwrap();
+    assert_eq!(req.function, fs123_core::Fs123Function::Readdir);
+    assert_eq!(req.query_params, vec!["64"]);
+
+    // Test v8 readlink endpoint
+    let req = parse_url("/fs123/8/0/readlink/mysymlink").unwrap();
+    assert_eq!(req.function, fs123_core::Fs123Function::Readlink);
+
+    // Test v8 statvfs endpoint
+    let req = parse_url("/fs123/8/0/statvfs/").unwrap();
+    assert_eq!(req.function, fs123_core::Fs123Function::Statvfs);
+
+    // Test v8 getxattr endpoint
+    let req = parse_url("/fs123/8/0/getxattr/file?128;user.attr;").unwrap();
+    assert_eq!(req.function, fs123_core::Fs123Function::Getxattr);
+    assert_eq!(req.query_params, vec!["128", "user.attr", ""]);
+
+    // Test v8 listxattr endpoint
+    let req = parse_url("/fs123/8/0/listxattr/file?128").unwrap();
+    assert_eq!(req.function, fs123_core::Fs123Function::Listxattr);
+    assert_eq!(req.query_params, vec!["128"]);
+}
+
+#[test]
+fn test_v7_and_v8_compatibility() {
+    use fs123_core::parse_url;
+
+    // Verify both v7 and v8 can be parsed
+    let v7_req = parse_url("/fs123/7/3/a/file").unwrap();
+    let v8_req = parse_url("/fs123/8/0/stat/file").unwrap();
+
+    // Both should parse the same path
+    assert_eq!(v7_req.path, v8_req.path);
+
+    // Both map to the same enum variant
+    assert_eq!(v7_req.function, fs123_core::Fs123Function::Stat);
+    assert_eq!(v8_req.function, fs123_core::Fs123Function::Stat);
+
+    // Different protocol versions
+    assert_eq!(v7_req.major_version, 7);
+    assert_eq!(v8_req.major_version, 8);
 }

@@ -2,7 +2,7 @@
 
 use fs123_core::{
     types::{d_type, DirEntryData, Fs123StatResult, Fs123StatvfsResult},
-    Fs123HttpClient,
+    Fs123Function, Fs123HttpClient,
 };
 use fuser::{
     FileAttr, FileType, Filesystem, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, ReplyOpen,
@@ -105,7 +105,7 @@ impl Fs123Filesystem {
 
         // Cache miss or disabled - fetch from server
         let client = self.client.lock().unwrap();
-        let response = client.request_raw("a", path, None).map_err(|e| {
+        let response = client.request_raw(Fs123Function::Stat, path, None).map_err(|e| {
             error!("stat_path failed for {}: {}", path, e);
             e.to_errno()
         })?;
@@ -187,7 +187,7 @@ impl Fs123Filesystem {
 
         let client = self.client.lock().unwrap();
         let response = client
-            .request("f", path, Some(&params_ref))
+            .request(Fs123Function::Read, path, Some(&params_ref))
             .map_err(|e| e.to_errno())?;
 
         let content = response.content().unwrap_or(&[]);
@@ -222,7 +222,7 @@ impl Fs123Filesystem {
 
             let client = self.client.lock().unwrap();
             let response = client
-                .request("d", path, Some(&params_ref))
+                .request(Fs123Function::Readdir, path, Some(&params_ref))
                 .map_err(|e| e.to_errno())?;
 
             if let Some(content) = response.content() {
@@ -272,7 +272,7 @@ impl Fs123Filesystem {
 
         // Cache miss or disabled - fetch from server
         let client = self.client.lock().unwrap();
-        let response = client.request("l", path, None).map_err(|e| e.to_errno())?;
+        let response = client.request(Fs123Function::Readlink, path, None).map_err(|e| e.to_errno())?;
 
         let target = response.content_str().ok_or(libc::EIO)?;
 
@@ -294,7 +294,7 @@ impl Fs123Filesystem {
     /// Get statvfs from server.
     fn get_statvfs(&self, path: &str) -> Result<Fs123StatvfsResult, i32> {
         let client = self.client.lock().unwrap();
-        let response = client.request("s", path, None).map_err(|e| e.to_errno())?;
+        let response = client.request(Fs123Function::Statvfs, path, None).map_err(|e| e.to_errno())?;
 
         let content = response.content_str().ok_or(libc::EIO)?;
         Fs123StatvfsResult::from_str(&content).ok_or(libc::EIO)
@@ -308,7 +308,7 @@ impl Fs123Filesystem {
 
         let client = self.client.lock().unwrap();
         let response = client
-            .request("x", path, Some(&params_ref))
+            .request(Fs123Function::Getxattr, path, Some(&params_ref))
             .map_err(|e| e.to_errno())?;
 
         response
@@ -325,7 +325,7 @@ impl Fs123Filesystem {
 
         let client = self.client.lock().unwrap();
         let response = client
-            .request_raw("x", path, Some(&params_ref))
+            .request_raw(Fs123Function::Listxattr, path, Some(&params_ref))
             .map_err(|e| e.to_errno())?;
 
         // Check errno
@@ -343,7 +343,7 @@ impl Fs123Filesystem {
         let params_ref: Vec<&str> = params.iter().map(|s| s.as_str()).collect();
 
         let response = client
-            .request("x", path, Some(&params_ref))
+            .request(Fs123Function::Listxattr, path, Some(&params_ref))
             .map_err(|e| e.to_errno())?;
 
         response

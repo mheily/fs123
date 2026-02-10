@@ -210,7 +210,7 @@ pub async fn handle_statfs(request: Fs123Request, config: &ServerConfig) -> Http
     }
 }
 
-/// Handle /x endpoint - extended attributes
+/// Handle v7 /x endpoint - combined getxattr/listxattr (query params disambiguate).
 pub async fn handle_xattr(request: Fs123Request, config: &ServerConfig) -> HttpResponse {
     // Query format: Len;Name;
     if request.query_params.is_empty() {
@@ -231,6 +231,75 @@ pub async fn handle_xattr(request: Fs123Request, config: &ServerConfig) -> HttpR
     match config
         .backend
         .get_xattr(&request.path, name, max_size * 1024)
+        .await
+    {
+        Ok(data) => Fs123ResponseBuilder::new()
+            .errno(0)
+            .content(data)
+            .max_age(config.default_max_age)
+            .stale_while_revalidate(config.default_stale_while_revalidate)
+            .build(),
+        Err(e) => Fs123ResponseBuilder::new()
+            .errno(e.errno)
+            .max_age(config.default_max_age)
+            .stale_while_revalidate(config.default_stale_while_revalidate)
+            .build(),
+    }
+}
+
+/// Handle v8 /getxattr endpoint - get a specific extended attribute (name required).
+pub async fn handle_getxattr(request: Fs123Request, config: &ServerConfig) -> HttpResponse {
+    // Query format: Len;Name;
+    if request.query_params.is_empty() {
+        return Fs123ResponseBuilder::build_error(400, "Missing length parameter");
+    }
+
+    if request.query_params.len() < 2 || request.query_params[1].is_empty() {
+        return Fs123ResponseBuilder::build_error(400, "Missing attribute name parameter");
+    }
+
+    let max_size: usize = match request.query_params[0].parse() {
+        Ok(v) => v,
+        Err(_) => return Fs123ResponseBuilder::build_error(400, "Invalid length parameter"),
+    };
+
+    let name = &request.query_params[1];
+
+    match config
+        .backend
+        .get_xattr(&request.path, name, max_size * 1024)
+        .await
+    {
+        Ok(data) => Fs123ResponseBuilder::new()
+            .errno(0)
+            .content(data)
+            .max_age(config.default_max_age)
+            .stale_while_revalidate(config.default_stale_while_revalidate)
+            .build(),
+        Err(e) => Fs123ResponseBuilder::new()
+            .errno(e.errno)
+            .max_age(config.default_max_age)
+            .stale_while_revalidate(config.default_stale_while_revalidate)
+            .build(),
+    }
+}
+
+/// Handle /listxattr endpoint - list all extended attribute names (v8)
+pub async fn handle_listxattr(request: Fs123Request, config: &ServerConfig) -> HttpResponse {
+    // Query format: Len;
+    if request.query_params.is_empty() {
+        return Fs123ResponseBuilder::build_error(400, "Missing length parameter");
+    }
+
+    let max_size: usize = match request.query_params[0].parse() {
+        Ok(v) => v,
+        Err(_) => return Fs123ResponseBuilder::build_error(400, "Invalid length parameter"),
+    };
+
+    // Empty name means list all xattrs
+    match config
+        .backend
+        .get_xattr(&request.path, "", max_size * 1024)
         .await
     {
         Ok(data) => Fs123ResponseBuilder::new()

@@ -9,6 +9,84 @@ use std::io::Read;
 use crate::error::{Fs123Error, Result};
 use crate::netstring::parse_response;
 
+/// Protocol function identifiers.
+///
+/// Maps between internal operation names and protocol-version-specific URL strings.
+/// v7.x uses single-letter function names, v8+ uses descriptive multi-letter names.
+///
+/// The `Xattr` variant represents v7's combined `/x` endpoint, which handles both
+/// getxattr and listxattr. The distinction between the two is made by the query
+/// parameters, not the function name. Clients should use `Getxattr` or `Listxattr`
+/// directly; `Xattr` only appears when parsing v7 server requests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Fs123Function {
+    Stat,
+    Read,
+    Readdir,
+    Readlink,
+    Statvfs,
+    /// v7 combined xattr endpoint — query params determine get vs list.
+    /// Only produced by `from_url_str("x")`; clients should use `Getxattr`/`Listxattr`.
+    Xattr,
+    Getxattr,
+    Listxattr,
+    ServerStats,
+    Passthrough,
+}
+
+impl Fs123Function {
+    /// Parse a function name from a URL string (either v7 or v8 format).
+    ///
+    /// v7's `"x"` maps to `Xattr` (ambiguous), while v8's `"getxattr"` and
+    /// `"listxattr"` map to their specific variants.
+    pub fn from_url_str(s: &str) -> Option<Self> {
+        match s {
+            "a" | "stat" => Some(Self::Stat),
+            "f" | "read" => Some(Self::Read),
+            "d" | "readdir" => Some(Self::Readdir),
+            "l" | "readlink" => Some(Self::Readlink),
+            "s" | "statvfs" => Some(Self::Statvfs),
+            "x" => Some(Self::Xattr),
+            "getxattr" => Some(Self::Getxattr),
+            "listxattr" => Some(Self::Listxattr),
+            "n" => Some(Self::ServerStats),
+            "p" => Some(Self::Passthrough),
+            _ => None,
+        }
+    }
+
+    /// Return the URL string for this function in the given protocol major version.
+    ///
+    /// `Getxattr` and `Listxattr` both emit `"x"` for v7. `Xattr` always emits `"x"`
+    /// regardless of version (it should not be used for v8 outbound requests).
+    pub fn to_url_str(self, major_version: u32) -> &'static str {
+        if major_version >= 8 {
+            match self {
+                Self::Stat => "stat",
+                Self::Read => "read",
+                Self::Readdir => "readdir",
+                Self::Readlink => "readlink",
+                Self::Statvfs => "statvfs",
+                Self::Xattr | Self::Getxattr => "getxattr",
+                Self::Listxattr => "listxattr",
+                Self::ServerStats => "n",
+                Self::Passthrough => "p",
+            }
+        } else {
+            match self {
+                Self::Stat => "a",
+                Self::Read => "f",
+                Self::Readdir => "d",
+                Self::Readlink => "l",
+                Self::Statvfs => "s",
+                Self::Xattr | Self::Getxattr | Self::Listxattr => "x",
+                Self::ServerStats => "n",
+                Self::Passthrough => "p",
+            }
+        }
+    }
+}
+
 // Define a custom encoding set for fs123 URLs.
 // We need to encode spaces and other problematic characters,
 // but we should NOT encode dots, dashes, underscores, and tildes
@@ -35,7 +113,7 @@ pub struct Fs123Request {
     pub selector: Vec<String>,
     pub major_version: u32,
     pub minor_version: u32,
-    pub function: String,
+    pub function: Fs123Function,
     pub path: String,
     pub query_params: Vec<String>,
 }
@@ -103,7 +181,8 @@ pub fn parse_url(url: &str) -> std::result::Result<Fs123Request, String> {
     if idx >= after_sigil.len() {
         return Err("Missing function".to_string());
     }
-    let function = after_sigil[idx].to_string();
+    let function = Fs123Function::from_url_str(after_sigil[idx])
+        .ok_or_else(|| format!("Unknown function: {}", after_sigil[idx]))?;
     idx += 1;
 
     // Remaining components form the path (URL-decode each component)
@@ -159,13 +238,16 @@ pub fn parse_url(url: &str) -> std::result::Result<Fs123Request, String> {
 ///
 /// # Returns
 /// The URL path (without scheme/host)
-pub fn build_url(proto: &str, function: &str, path: &str, query_params: Option<&[&str]>) -> String {
+pub fn build_url(proto: &str, function: Fs123Function, path: &str, query_params: Option<&[&str]>) -> String {
     // Parse protocol version
     let (major, minor) = if let Some(pos) = proto.find('.') {
         (&proto[..pos], &proto[pos + 1..])
     } else {
         (proto, "0")
     };
+
+    let major_version: u32 = major.parse().unwrap_or(7);
+    let function = function.to_url_str(major_version);
 
     // Ensure path starts with /
     let path = if path.starts_with('/') {
@@ -293,7 +375,7 @@ impl Fs123HttpClient {
     /// Send a request to the server.
     pub fn request(
         &self,
-        function: &str,
+        function: Fs123Function,
         path: &str,
         query_params: Option<&[&str]>,
     ) -> Result<Fs123Response> {
@@ -340,7 +422,7 @@ impl Fs123HttpClient {
     /// Useful when you need to handle errno yourself.
     pub fn request_raw(
         &self,
-        function: &str,
+        function: Fs123Function,
         path: &str,
         query_params: Option<&[&str]>,
     ) -> Result<Fs123Response> {
@@ -393,25 +475,25 @@ mod tests {
 
     #[test]
     fn test_build_url_basic() {
-        let url = build_url("7.2", "a", "/test/file.txt", None);
+        let url = build_url("7.2", Fs123Function::Stat, "/test/file.txt", None);
         assert_eq!(url, "/fs123/7/2/a/test/file.txt");
     }
 
     #[test]
     fn test_build_url_with_query() {
-        let url = build_url("7.3", "f", "/file", Some(&["128", "0"]));
+        let url = build_url("7.3", Fs123Function::Read, "/file", Some(&["128", "0"]));
         assert_eq!(url, "/fs123/7/3/f/file?128;0");
     }
 
     #[test]
     fn test_build_url_empty_path() {
-        let url = build_url("7.2", "s", "/", None);
+        let url = build_url("7.2", Fs123Function::Statvfs, "/", None);
         assert_eq!(url, "/fs123/7/2/s");
     }
 
     #[test]
     fn test_build_url_special_chars() {
-        let url = build_url("7.2", "a", "/path with spaces/file", None);
+        let url = build_url("7.2", Fs123Function::Stat, "/path with spaces/file", None);
         assert!(url.contains("path%20with%20spaces"));
     }
 
@@ -420,7 +502,7 @@ mod tests {
         let req = parse_url("/fs123/7/3/a/foo/bar").unwrap();
         assert_eq!(req.major_version, 7);
         assert_eq!(req.minor_version, 3);
-        assert_eq!(req.function, "a");
+        assert_eq!(req.function, Fs123Function::Stat);
         assert_eq!(req.path, "/foo/bar");
         assert!(req.selector.is_empty());
     }
@@ -429,7 +511,7 @@ mod tests {
     fn test_parse_with_selector() {
         let req = parse_url("/sel/ector/fs123/7/3/f/path").unwrap();
         assert_eq!(req.selector, vec!["sel", "ector"]);
-        assert_eq!(req.function, "f");
+        assert_eq!(req.function, Fs123Function::Read);
         assert_eq!(req.path, "/path");
     }
 
@@ -450,7 +532,7 @@ mod tests {
         let req = parse_url("/fs123/7/a/file").unwrap();
         assert_eq!(req.major_version, 7);
         assert_eq!(req.minor_version, 0);
-        assert_eq!(req.function, "a");
+        assert_eq!(req.function, Fs123Function::Stat);
     }
 
     #[test]
@@ -535,7 +617,7 @@ mod tests {
     #[test]
     fn test_parse_file_read_params() {
         let req = parse_url("/fs123/7/3/f/path/to/file?128;0").unwrap();
-        assert_eq!(req.function, "f");
+        assert_eq!(req.function, Fs123Function::Read);
         assert_eq!(req.query_params.len(), 2);
         assert_eq!(req.query_params[0], "128");
         assert_eq!(req.query_params[1], "0");
@@ -544,7 +626,7 @@ mod tests {
     #[test]
     fn test_parse_directory_params() {
         let req = parse_url("/fs123/7/3/d/mydir?64;lastfile").unwrap();
-        assert_eq!(req.function, "d");
+        assert_eq!(req.function, Fs123Function::Readdir);
         assert_eq!(req.query_params.len(), 2);
         assert_eq!(req.query_params[0], "64");
         assert_eq!(req.query_params[1], "lastfile");

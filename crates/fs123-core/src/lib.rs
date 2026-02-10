@@ -18,5 +18,5 @@ pub use netstring::{
     encode_str as netstring_encode_str,
     parse_response,
 };
-pub use protocol::{build_url, parse_url, Fs123HttpClient, Fs123Request, Fs123Response};
+pub use protocol::{build_url, parse_url, Fs123Function, Fs123HttpClient, Fs123Request, Fs123Response};
 pub use types::{DirEntryData, Fs123StatResult, Fs123StatvfsResult};
