@@ -45,6 +45,7 @@
 
 use nix::sys::signal::{self, Signal};
 use nix::unistd::Pid;
+use serde_json::Value;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -1148,50 +1149,316 @@ fn test_http_with_selector() {
     assert_eq!(response.status(), 200);
 }
 
+/// Test: v8 /stat endpoint returns JSON with POSIX field names
 #[test]
 #[ignore = "Requires subprocess spawning without sandbox restrictions"]
-fn test_http_v8_protocol() {
+fn test_http_v8_stat_json() {
     let mut harness = TestHarness::new();
     create_test_fixtures(harness.export_path());
-
     harness.start_server().expect("Failed to start server");
 
-    // Test v8 stat endpoint (equivalent to v7 /a)
     let url = format!("http://127.0.0.1:{}/fs123/8/0/stat/hello.txt", harness.port);
     let response = reqwest::blocking::get(&url).expect("HTTP request failed");
     assert_eq!(response.status(), 200);
 
-    // Test v8 read endpoint (equivalent to v7 /f)
+    let json: Value = response.json().expect("Response should be valid JSON");
+    assert_eq!(json["errno"], 0);
+    let content = &json["content"];
+    assert!(content["st_mode"].as_u64().is_some(), "should have st_mode");
+    assert!(content["st_nlink"].as_u64().is_some(), "should have st_nlink");
+    assert!(content["st_uid"].as_u64().is_some(), "should have st_uid");
+    assert!(content["st_gid"].as_u64().is_some(), "should have st_gid");
+    assert_eq!(content["st_size"].as_i64().unwrap(), 13, "hello.txt is 13 bytes");
+    assert!(content["st_mtim"].as_i64().is_some(), "should have st_mtim");
+    assert!(content["st_ctim"].as_i64().is_some(), "should have st_ctim");
+    assert!(content["st_atim"].as_i64().is_some(), "should have st_atim");
+    assert!(content["st_ino"].as_u64().is_some(), "should have st_ino");
+    assert!(content["st_dev"].as_u64().is_some(), "should have st_dev");
+    assert!(content["st_blocks"].as_i64().is_some(), "should have st_blocks");
+    assert!(content["st_blksize"].as_i64().is_some(), "should have st_blksize");
+    assert!(content["st_rdev"].as_u64().is_some(), "should have st_rdev");
+    // Check st_mode indicates regular file (S_IFREG = 0o100000 = 32768)
+    let mode = content["st_mode"].as_u64().unwrap() as u32;
+    assert_eq!(mode & libc::S_IFMT as u32, libc::S_IFREG as u32, "should be regular file");
+    // Should have validator and estalecookie at top level
+    assert!(json["validator"].as_u64().is_some(), "should have validator");
+    assert!(json["estalecookie"].as_u64().is_some(), "should have estalecookie");
+}
+
+/// Test: v8 /stat for directory returns JSON
+#[test]
+#[ignore = "Requires subprocess spawning without sandbox restrictions"]
+fn test_http_v8_stat_directory_json() {
+    let mut harness = TestHarness::new();
+    create_test_fixtures(harness.export_path());
+    harness.start_server().expect("Failed to start server");
+
+    let url = format!("http://127.0.0.1:{}/fs123/8/0/stat/subdir", harness.port);
+    let json: Value = reqwest::blocking::get(&url)
+        .expect("HTTP request failed")
+        .json()
+        .expect("Response should be valid JSON");
+
+    assert_eq!(json["errno"], 0);
+    let mode = json["content"]["st_mode"].as_u64().unwrap() as u32;
+    assert_eq!(mode & libc::S_IFMT as u32, libc::S_IFDIR as u32, "should be directory");
+}
+
+/// Test: v8 /stat for nonexistent file returns errno-only JSON
+#[test]
+#[ignore = "Requires subprocess spawning without sandbox restrictions"]
+fn test_http_v8_stat_enoent_json() {
+    let mut harness = TestHarness::new();
+    harness.start_server().expect("Failed to start server");
+
+    let url = format!("http://127.0.0.1:{}/fs123/8/0/stat/nonexistent.txt", harness.port);
+    let json: Value = reqwest::blocking::get(&url)
+        .expect("HTTP request failed")
+        .json()
+        .expect("Response should be valid JSON");
+
+    assert_eq!(json["errno"].as_i64().unwrap(), libc::ENOENT as i64);
+    // On error, content/validator/estalecookie should be absent
+    assert!(json.get("content").is_none(), "no content on error");
+    assert!(json.get("validator").is_none(), "no validator on error");
+}
+
+/// Test: v8 /read endpoint returns binary with metadata headers
+#[test]
+#[ignore = "Requires subprocess spawning without sandbox restrictions"]
+fn test_http_v8_read_binary() {
+    let mut harness = TestHarness::new();
+    create_test_fixtures(harness.export_path());
+    harness.start_server().expect("Failed to start server");
+
     let url = format!("http://127.0.0.1:{}/fs123/8/0/read/hello.txt?1;0", harness.port);
     let response = reqwest::blocking::get(&url).expect("HTTP request failed");
     assert_eq!(response.status(), 200);
-    let body = response.bytes().expect("Failed to read response body");
-    let parsed = fs123_core::netstring::parse_response(&body);
-    assert_eq!(parsed.get("errno"), Some(&b"0".to_vec()));
 
-    // Test v8 readdir endpoint (equivalent to v7 /d)
-    let url = format!("http://127.0.0.1:{}/fs123/8/0/readdir/?64", harness.port);
+    // Check content type
+    let ct = response.headers().get("content-type").expect("should have content-type");
+    assert_eq!(ct.to_str().unwrap(), "application/octet-stream");
+
+    // Check metadata headers
+    let errno = response.headers().get("x-fs123-errno").expect("should have X-Fs123-Errno");
+    assert_eq!(errno.to_str().unwrap(), "0");
+    assert!(response.headers().get("x-fs123-validator").is_some(), "should have X-Fs123-Validator");
+    assert!(response.headers().get("x-fs123-estalecookie").is_some(), "should have X-Fs123-Estalecookie");
+
+    // Body is raw file content
+    let body = response.bytes().expect("Failed to read body");
+    assert_eq!(body.as_ref(), b"Hello, fs123!");
+}
+
+/// Test: v8 /read for nonexistent file returns errno in header, empty body
+#[test]
+#[ignore = "Requires subprocess spawning without sandbox restrictions"]
+fn test_http_v8_read_enoent_binary() {
+    let mut harness = TestHarness::new();
+    harness.start_server().expect("Failed to start server");
+
+    let url = format!("http://127.0.0.1:{}/fs123/8/0/read/nonexistent.txt?1;0", harness.port);
     let response = reqwest::blocking::get(&url).expect("HTTP request failed");
     assert_eq!(response.status(), 200);
 
-    // Test v8 readlink endpoint (equivalent to v7 /l)
+    let errno: i32 = response.headers().get("x-fs123-errno")
+        .expect("should have X-Fs123-Errno")
+        .to_str().unwrap().parse().unwrap();
+    assert_eq!(errno, libc::ENOENT);
+
+    let body = response.bytes().expect("Failed to read body");
+    assert!(body.is_empty(), "body should be empty on error");
+}
+
+/// Test: v8 /read with offset past EOF returns empty body
+#[test]
+#[ignore = "Requires subprocess spawning without sandbox restrictions"]
+fn test_http_v8_read_past_eof() {
+    let mut harness = TestHarness::new();
+    create_test_fixtures(harness.export_path());
+    harness.start_server().expect("Failed to start server");
+
+    let url = format!("http://127.0.0.1:{}/fs123/8/0/read/hello.txt?1;1000", harness.port);
+    let response = reqwest::blocking::get(&url).expect("HTTP request failed");
+    assert_eq!(response.status(), 200);
+
+    let errno: i32 = response.headers().get("x-fs123-errno")
+        .unwrap().to_str().unwrap().parse().unwrap();
+    assert_eq!(errno, 0);
+
+    let body = response.bytes().expect("Failed to read body");
+    assert!(body.is_empty(), "should be empty past EOF");
+}
+
+/// Test: v8 /readdir endpoint returns JSON with entry array
+#[test]
+#[ignore = "Requires subprocess spawning without sandbox restrictions"]
+fn test_http_v8_readdir_json() {
+    let mut harness = TestHarness::new();
+    create_test_fixtures(harness.export_path());
+    harness.start_server().expect("Failed to start server");
+
+    let url = format!("http://127.0.0.1:{}/fs123/8/0/readdir/subdir?64", harness.port);
+    let json: Value = reqwest::blocking::get(&url)
+        .expect("HTTP request failed")
+        .json()
+        .expect("Response should be valid JSON");
+
+    assert_eq!(json["errno"], 0);
+    let entries = json["content"]["entries"].as_array().expect("entries should be array");
+    let names: Vec<&str> = entries.iter().map(|e| e["d_name"].as_str().unwrap()).collect();
+    assert!(names.contains(&"nested.txt"), "should contain nested.txt");
+    assert!(names.contains(&"another.txt"), "should contain another.txt");
+
+    // Each entry should have d_type and estalecookie
+    for entry in entries {
+        assert!(entry["d_type"].as_u64().is_some(), "entry should have d_type");
+        assert!(entry["estalecookie"].as_u64().is_some(), "entry should have estalecookie");
+    }
+
+    // Should have estalecookie and nextstart at top level
+    assert!(json["estalecookie"].as_u64().is_some(), "should have estalecookie");
+    assert!(json.get("nextstart").is_some(), "should have nextstart");
+}
+
+/// Test: v8 /readlink endpoint returns JSON with target
+#[test]
+#[ignore = "Requires subprocess spawning without sandbox restrictions"]
+fn test_http_v8_readlink_json() {
+    let mut harness = TestHarness::new();
+    create_test_fixtures(harness.export_path());
+    harness.start_server().expect("Failed to start server");
+
     let url = format!("http://127.0.0.1:{}/fs123/8/0/readlink/link_to_hello", harness.port);
-    let response = reqwest::blocking::get(&url).expect("HTTP request failed");
-    assert_eq!(response.status(), 200);
+    let json: Value = reqwest::blocking::get(&url)
+        .expect("HTTP request failed")
+        .json()
+        .expect("Response should be valid JSON");
 
-    // Test v8 statvfs endpoint (equivalent to v7 /s)
+    assert_eq!(json["errno"], 0);
+    assert_eq!(json["content"]["target"].as_str().unwrap(), "hello.txt");
+}
+
+/// Test: v8 /statvfs endpoint returns JSON with POSIX statvfs fields
+#[test]
+#[ignore = "Requires subprocess spawning without sandbox restrictions"]
+fn test_http_v8_statvfs_json() {
+    let mut harness = TestHarness::new();
+    create_test_fixtures(harness.export_path());
+    harness.start_server().expect("Failed to start server");
+
     let url = format!("http://127.0.0.1:{}/fs123/8/0/statvfs/", harness.port);
-    let response = reqwest::blocking::get(&url).expect("HTTP request failed");
-    assert_eq!(response.status(), 200);
+    let json: Value = reqwest::blocking::get(&url)
+        .expect("HTTP request failed")
+        .json()
+        .expect("Response should be valid JSON");
 
-    // Test v8 getxattr endpoint (new in v8, split from v7 /x)
+    assert_eq!(json["errno"], 0);
+    let content = &json["content"];
+    assert!(content["f_bsize"].as_u64().unwrap() > 0, "should have f_bsize");
+    assert!(content["f_frsize"].as_u64().is_some(), "should have f_frsize");
+    assert!(content["f_blocks"].as_u64().unwrap() > 0, "should have f_blocks");
+    assert!(content["f_bfree"].as_u64().is_some(), "should have f_bfree");
+    assert!(content["f_bavail"].as_u64().is_some(), "should have f_bavail");
+    assert!(content["f_files"].as_u64().is_some(), "should have f_files");
+    assert!(content["f_ffree"].as_u64().is_some(), "should have f_ffree");
+    assert!(content["f_favail"].as_u64().is_some(), "should have f_favail");
+    assert!(content["f_fsid"].as_u64().is_some(), "should have f_fsid");
+    assert!(content["f_flag"].as_u64().is_some(), "should have f_flag");
+    assert!(content["f_namemax"].as_u64().unwrap() > 0, "should have f_namemax");
+}
+
+/// Test: v8 /n endpoint returns JSON with server stats
+#[test]
+#[ignore = "Requires subprocess spawning without sandbox restrictions"]
+fn test_http_v8_server_stats_json() {
+    let mut harness = TestHarness::new();
+    harness.start_server().expect("Failed to start server");
+
+    let url = format!("http://127.0.0.1:{}/fs123/8/0/n/", harness.port);
+    let json: Value = reqwest::blocking::get(&url)
+        .expect("HTTP request failed")
+        .json()
+        .expect("Response should be valid JSON");
+
+    assert_eq!(json["errno"], 0);
+    let content = &json["content"];
+    assert!(content["version"].as_str().is_some(), "should have version");
+    assert!(content["backend"].as_str().is_some(), "should have backend");
+    assert!(content["max_age"].as_u64().is_some(), "should have max_age");
+}
+
+/// Test: v8 /getxattr endpoint returns binary with errno header
+#[test]
+#[ignore = "Requires subprocess spawning without sandbox restrictions"]
+fn test_http_v8_getxattr_binary() {
+    let mut harness = TestHarness::new();
+    create_test_fixtures(harness.export_path());
+    harness.start_server().expect("Failed to start server");
+
     let url = format!("http://127.0.0.1:{}/fs123/8/0/getxattr/hello.txt?128;user.test;", harness.port);
     let response = reqwest::blocking::get(&url).expect("HTTP request failed");
-    // May return error if xattrs not supported, but should parse
-    assert!(response.status() == 200);
+    assert_eq!(response.status(), 200);
 
-    // Test v8 listxattr endpoint (new in v8, split from v7 /x)
+    let ct = response.headers().get("content-type").expect("should have content-type");
+    assert_eq!(ct.to_str().unwrap(), "application/octet-stream");
+    assert!(response.headers().get("x-fs123-errno").is_some(), "should have X-Fs123-Errno");
+}
+
+/// Test: v8 /listxattr endpoint returns binary with errno header
+#[test]
+#[ignore = "Requires subprocess spawning without sandbox restrictions"]
+fn test_http_v8_listxattr_binary() {
+    let mut harness = TestHarness::new();
+    create_test_fixtures(harness.export_path());
+    harness.start_server().expect("Failed to start server");
+
     let url = format!("http://127.0.0.1:{}/fs123/8/0/listxattr/hello.txt?128", harness.port);
     let response = reqwest::blocking::get(&url).expect("HTTP request failed");
-    assert!(response.status() == 200);
+    assert_eq!(response.status(), 200);
+
+    let ct = response.headers().get("content-type").expect("should have content-type");
+    assert_eq!(ct.to_str().unwrap(), "application/octet-stream");
+    assert!(response.headers().get("x-fs123-errno").is_some(), "should have X-Fs123-Errno");
+}
+
+/// Test: v7 endpoints still return netstring format (not JSON)
+#[test]
+#[ignore = "Requires subprocess spawning without sandbox restrictions"]
+fn test_http_v7_still_netstring() {
+    let mut harness = TestHarness::new();
+    create_test_fixtures(harness.export_path());
+    harness.start_server().expect("Failed to start server");
+
+    // v7 /a should NOT return JSON
+    let url = format!("http://127.0.0.1:{}/fs123/7/3/a/hello.txt", harness.port);
+    let response = reqwest::blocking::get(&url).expect("HTTP request failed");
+    assert_eq!(response.status(), 200);
+    let body = response.text().expect("Failed to read body");
+    // Netstring format contains "errno" as netstring-encoded key
+    assert!(body.contains("errno"), "v7 response should contain errno");
+    // Should NOT be valid JSON
+    assert!(serde_json::from_str::<Value>(&body).is_err(), "v7 response should not be JSON");
+}
+
+/// Test: v8 /read binary file returns correct raw bytes
+#[test]
+#[ignore = "Requires subprocess spawning without sandbox restrictions"]
+fn test_http_v8_read_binary_file() {
+    let mut harness = TestHarness::new();
+    create_test_fixtures(harness.export_path());
+    harness.start_server().expect("Failed to start server");
+
+    // Read the 256-byte binary.dat file
+    let url = format!("http://127.0.0.1:{}/fs123/8/0/read/binary.dat?1;0", harness.port);
+    let response = reqwest::blocking::get(&url).expect("HTTP request failed");
+    assert_eq!(response.status(), 200);
+
+    let errno: i32 = response.headers().get("x-fs123-errno")
+        .unwrap().to_str().unwrap().parse().unwrap();
+    assert_eq!(errno, 0);
+
+    let body = response.bytes().expect("Failed to read body");
+    let expected: Vec<u8> = (0u8..=255).collect();
+    assert_eq!(body.as_ref(), expected.as_slice(), "binary content should match byte-for-byte");
 }
