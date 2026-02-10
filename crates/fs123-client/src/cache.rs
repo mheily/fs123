@@ -7,7 +7,7 @@
 use crossbeam_channel::{Receiver, Sender};
 use fs123_core::{
     types::{DirEntryData, Fs123StatResult},
-    Fs123HttpClient,
+    Fs123Function, Fs123HttpClient,
 };
 use log::{debug, error};
 use parking_lot::RwLock;
@@ -518,7 +518,7 @@ impl BackgroundRefresher {
     ) {
         let client_guard = client.lock().unwrap();
 
-        match client_guard.request_raw("a", path, None) {
+        match client_guard.request_raw(Fs123Function::Stat, path, None) {
             Ok(response) => {
                 if let Some(errno) = response.errno() {
                     if errno != 0 {
@@ -599,7 +599,7 @@ impl BackgroundRefresher {
             };
             let params_ref: Vec<&str> = params.iter().map(|s| s.as_str()).collect();
 
-            match client_guard.request("d", path, Some(&params_ref)) {
+            match client_guard.request(Fs123Function::Readdir, path, Some(&params_ref)) {
                 Ok(response) => {
                     if let Some(content) = response.content() {
                         let entries = DirEntryData::parse_entries(content);
@@ -648,7 +648,7 @@ impl BackgroundRefresher {
     ) {
         let client_guard = client.lock().unwrap();
 
-        match client_guard.request("l", path, None) {
+        match client_guard.request(Fs123Function::Readlink, path, None) {
             Ok(response) => {
                 if let Some(target) = response.content_str() {
                     let metadata = CacheMetadata {

@@ -1147,3 +1147,51 @@ fn test_http_with_selector() {
 
     assert_eq!(response.status(), 200);
 }
+
+#[test]
+#[ignore = "Requires subprocess spawning without sandbox restrictions"]
+fn test_http_v8_protocol() {
+    let mut harness = TestHarness::new();
+    create_test_fixtures(harness.export_path());
+
+    harness.start_server().expect("Failed to start server");
+
+    // Test v8 stat endpoint (equivalent to v7 /a)
+    let url = format!("http://127.0.0.1:{}/fs123/8/0/stat/hello.txt", harness.port);
+    let response = reqwest::blocking::get(&url).expect("HTTP request failed");
+    assert_eq!(response.status(), 200);
+
+    // Test v8 read endpoint (equivalent to v7 /f)
+    let url = format!("http://127.0.0.1:{}/fs123/8/0/read/hello.txt?1;0", harness.port);
+    let response = reqwest::blocking::get(&url).expect("HTTP request failed");
+    assert_eq!(response.status(), 200);
+    let body = response.bytes().expect("Failed to read response body");
+    let parsed = fs123_core::netstring::parse_response(&body);
+    assert_eq!(parsed.get("errno"), Some(&b"0".to_vec()));
+
+    // Test v8 readdir endpoint (equivalent to v7 /d)
+    let url = format!("http://127.0.0.1:{}/fs123/8/0/readdir/?64", harness.port);
+    let response = reqwest::blocking::get(&url).expect("HTTP request failed");
+    assert_eq!(response.status(), 200);
+
+    // Test v8 readlink endpoint (equivalent to v7 /l)
+    let url = format!("http://127.0.0.1:{}/fs123/8/0/readlink/link_to_hello", harness.port);
+    let response = reqwest::blocking::get(&url).expect("HTTP request failed");
+    assert_eq!(response.status(), 200);
+
+    // Test v8 statvfs endpoint (equivalent to v7 /s)
+    let url = format!("http://127.0.0.1:{}/fs123/8/0/statvfs/", harness.port);
+    let response = reqwest::blocking::get(&url).expect("HTTP request failed");
+    assert_eq!(response.status(), 200);
+
+    // Test v8 getxattr endpoint (new in v8, split from v7 /x)
+    let url = format!("http://127.0.0.1:{}/fs123/8/0/getxattr/hello.txt?128;user.test;", harness.port);
+    let response = reqwest::blocking::get(&url).expect("HTTP request failed");
+    // May return error if xattrs not supported, but should parse
+    assert!(response.status() == 200);
+
+    // Test v8 listxattr endpoint (new in v8, split from v7 /x)
+    let url = format!("http://127.0.0.1:{}/fs123/8/0/listxattr/hello.txt?128", harness.port);
+    let response = reqwest::blocking::get(&url).expect("HTTP request failed");
+    assert!(response.status() == 200);
+}

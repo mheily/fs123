@@ -52,7 +52,8 @@ fn parse_estale_cookie_source(s: &str) -> Result<EstaleCookieSource, String> {
 ///   - `none` - Disabled (return 0)
 ///
 /// # Examples
-/// ```ignore
+/// ```rust,no_run
+/// # async fn example() {
 /// use url::Url;
 /// use fs123_server::backends::create_backend;
 ///
@@ -62,6 +63,7 @@ fn parse_estale_cookie_source(s: &str) -> Result<EstaleCookieSource, String> {
 /// // With database feature:
 /// let url = Url::parse("sqlite:///var/lib/fs123/metadata.db").unwrap();
 /// let backend = create_backend(&url).await.unwrap();
+/// # }
 /// ```
 pub async fn create_backend(url: &Url) -> Result<Arc<dyn Backend>, String> {
     // Parse query parameters
