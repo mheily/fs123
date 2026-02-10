@@ -6,7 +6,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
 
-use super::traits::Backend;
+use super::traits::{Backend, WritableBackend};
 use super::types::{
     AttributeInfo, BackendError, BackendResult, DirEntry, DirectoryListing, FileContent,
     StatfsInfo,
@@ -343,5 +343,133 @@ impl Backend for FileBackend {
 
     fn describe(&self) -> String {
         format!("file://{}", self.root.display())
+    }
+}
+
+#[async_trait]
+impl WritableBackend for FileBackend {
+    async fn mkdir(&self, path: &str, mode: u32) -> BackendResult<()> {
+        let full_path = self.resolve_path(path);
+        fs::create_dir(&full_path).map_err(|e| BackendError::from_io_error(&e))?;
+        let c_path = std::ffi::CString::new(full_path.to_string_lossy().as_bytes())
+            .map_err(|_| BackendError::new(libc::EINVAL, "Invalid path"))?;
+        let ret = unsafe { libc::chmod(c_path.as_ptr(), mode as libc::mode_t) };
+        if ret != 0 {
+            return Err(BackendError::from_io_error(&std::io::Error::last_os_error()));
+        }
+        Ok(())
+    }
+
+    async fn rmdir(&self, path: &str) -> BackendResult<()> {
+        let full_path = self.resolve_path(path);
+        fs::remove_dir(&full_path).map_err(|e| BackendError::from_io_error(&e))?;
+        Ok(())
+    }
+
+    async fn chmod(&self, path: &str, mode: u32) -> BackendResult<()> {
+        let full_path = self.resolve_path(path);
+        let c_path = std::ffi::CString::new(full_path.to_string_lossy().as_bytes())
+            .map_err(|_| BackendError::new(libc::EINVAL, "Invalid path"))?;
+        let ret = unsafe { libc::chmod(c_path.as_ptr(), mode as libc::mode_t) };
+        if ret != 0 {
+            return Err(BackendError::from_io_error(&std::io::Error::last_os_error()));
+        }
+        Ok(())
+    }
+
+    async fn chown(&self, path: &str, uid: u32, gid: u32) -> BackendResult<()> {
+        let full_path = self.resolve_path(path);
+        let c_path = std::ffi::CString::new(full_path.to_string_lossy().as_bytes())
+            .map_err(|_| BackendError::new(libc::EINVAL, "Invalid path"))?;
+        let ret = unsafe { libc::lchown(c_path.as_ptr(), uid, gid) };
+        if ret != 0 {
+            return Err(BackendError::from_io_error(&std::io::Error::last_os_error()));
+        }
+        Ok(())
+    }
+
+    async fn utimens(
+        &self,
+        path: &str,
+        atime: (i64, i64),
+        mtime: (i64, i64),
+    ) -> BackendResult<()> {
+        let full_path = self.resolve_path(path);
+        let c_path = std::ffi::CString::new(full_path.to_string_lossy().as_bytes())
+            .map_err(|_| BackendError::new(libc::EINVAL, "Invalid path"))?;
+        let times = [
+            libc::timespec {
+                tv_sec: atime.0,
+                tv_nsec: atime.1,
+            },
+            libc::timespec {
+                tv_sec: mtime.0,
+                tv_nsec: mtime.1,
+            },
+        ];
+        let ret = unsafe {
+            libc::utimensat(
+                libc::AT_FDCWD,
+                c_path.as_ptr(),
+                times.as_ptr(),
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        };
+        if ret != 0 {
+            return Err(BackendError::from_io_error(&std::io::Error::last_os_error()));
+        }
+        Ok(())
+    }
+
+    async fn symlink(&self, target: &str, linkpath: &str) -> BackendResult<()> {
+        let full_linkpath = self.resolve_path(linkpath);
+        std::os::unix::fs::symlink(target, &full_linkpath)
+            .map_err(|e| BackendError::from_io_error(&e))?;
+        Ok(())
+    }
+
+    async fn link(&self, oldpath: &str, newpath: &str) -> BackendResult<()> {
+        let full_old = self.resolve_path(oldpath);
+        let full_new = self.resolve_path(newpath);
+        fs::hard_link(&full_old, &full_new).map_err(|e| BackendError::from_io_error(&e))?;
+        Ok(())
+    }
+
+    async fn unlink(&self, path: &str) -> BackendResult<()> {
+        let full_path = self.resolve_path(path);
+        fs::remove_file(&full_path).map_err(|e| BackendError::from_io_error(&e))?;
+        Ok(())
+    }
+
+    async fn rename(&self, from: &str, to: &str) -> BackendResult<()> {
+        let full_from = self.resolve_path(from);
+        let full_to = self.resolve_path(to);
+        fs::rename(&full_from, &full_to).map_err(|e| BackendError::from_io_error(&e))?;
+        Ok(())
+    }
+
+    async fn setxattr(
+        &self,
+        _path: &str,
+        _name: &str,
+        _value: &[u8],
+        _flags: u32,
+    ) -> BackendResult<()> {
+        Err(BackendError::new(libc::ENOTSUP, "Extended attributes not supported"))
+    }
+
+    async fn removexattr(&self, _path: &str, _name: &str) -> BackendResult<()> {
+        Err(BackendError::new(libc::ENOTSUP, "Extended attributes not supported"))
+    }
+
+    async fn check_access(&self, path: &str, mask: u32) -> BackendResult<()> {
+        let full_path = self.resolve_path(path);
+        let c_path = std::ffi::CString::new(full_path.to_string_lossy().as_bytes())
+            .map_err(|_| BackendError::new(libc::EINVAL, "Invalid path"))?;
+        let ret = unsafe { libc::access(c_path.as_ptr(), mask as libc::c_int) };
+        if ret != 0 {
+            return Err(BackendError::from_io_error(&std::io::Error::last_os_error()));
+        }
+        Ok(())
     }
 }

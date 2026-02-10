@@ -12,7 +12,7 @@ mod types;
 #[cfg(feature = "database")]
 pub use database::DatabaseBackend;
 pub use file::{EstaleCookieSource, FileBackend};
-pub use traits::Backend;
+pub use traits::{Backend, WritableBackend};
 pub use types::{
     AttributeInfo, BackendError, BackendResult, DirEntry, DirectoryListing, FileContent,
     StatfsInfo,

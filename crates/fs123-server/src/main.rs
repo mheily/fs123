@@ -60,6 +60,18 @@ async fn handle_request(req: HttpRequest, config: web::Data<ServerConfig>) -> Ht
                 Fs123Function::Listxattr => handlers::handle_listxattr(request, &config).await,
                 Fs123Function::ServerStats => handlers::handle_server_stats(request, &config).await,
                 Fs123Function::Passthrough => handlers::handle_passthrough(request, &config).await,
+                Fs123Function::Mkdir => handlers::handle_mkdir(request, &config).await,
+                Fs123Function::Rmdir => handlers::handle_rmdir(request, &config).await,
+                Fs123Function::Chmod => handlers::handle_chmod(request, &config).await,
+                Fs123Function::Chown => handlers::handle_chown(request, &config).await,
+                Fs123Function::Utimens => handlers::handle_utimens(request, &config).await,
+                Fs123Function::Symlink => handlers::handle_create_symlink(request, &config).await,
+                Fs123Function::Link => handlers::handle_link(request, &config).await,
+                Fs123Function::Unlink => handlers::handle_unlink(request, &config).await,
+                Fs123Function::Rename => handlers::handle_rename(request, &config).await,
+                Fs123Function::Setxattr => handlers::handle_setxattr(request, &config).await,
+                Fs123Function::Removexattr => handlers::handle_removexattr(request, &config).await,
+                Fs123Function::Access => handlers::handle_access(request, &config).await,
             }
         }
         Err(e) => HttpResponse::BadRequest().body(format!("Protocol error: {}", e)),
@@ -100,6 +112,7 @@ async fn main() -> std::io::Result<()> {
 
     let config = ServerConfig {
         backend,
+        writable_backend: None,
         default_max_age: args.max_age,
         default_stale_while_revalidate: args.stale_while_revalidate,
     };

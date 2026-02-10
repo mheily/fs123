@@ -21,7 +21,7 @@ mod schema;
 pub use content::{ContentFetcher, LocalContentFetcher, MultiSchemeContentFetcher};
 pub use schema::{DirEntryRow, FileRow, SCHEMA};
 
-use crate::backends::traits::Backend;
+use crate::backends::traits::{Backend, WritableBackend};
 use crate::backends::types::{
     AttributeInfo, BackendError, BackendResult, DirEntry, DirectoryListing, FileContent,
     StatfsInfo,
@@ -251,6 +251,9 @@ impl Backend for DatabaseBackend {
         format!("database://{}", self.db_url)
     }
 }
+
+// DatabaseBackend uses default WritableBackend implementations (all return ENOSYS)
+impl WritableBackend for DatabaseBackend {}
 
 #[cfg(test)]
 mod tests {
