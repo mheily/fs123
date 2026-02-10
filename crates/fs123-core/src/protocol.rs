@@ -8,6 +8,7 @@ use std::io::Read;
 
 use crate::error::{Fs123Error, Result};
 use crate::netstring::parse_response;
+use serde_json::Value;
 
 /// Protocol function identifiers.
 ///
@@ -291,13 +292,54 @@ pub fn build_url(proto: &str, function: Fs123Function, path: &str, query_params:
 /// Parsed response from an fs123 server.
 #[derive(Debug)]
 pub struct Fs123Response {
-    /// Key-value pairs from the response body
+    /// Key-value pairs from the response body (v7 netstring format)
     pub fields: HashMap<String, Vec<u8>>,
+    /// Parsed JSON body (v8 JSON endpoints)
+    pub json: Option<Value>,
+    /// Raw body bytes (v8 binary endpoints like /read, /getxattr, /listxattr)
+    pub binary_data: Option<Vec<u8>>,
 }
 
 impl Fs123Response {
+    /// Create from v7 netstring fields.
+    pub fn from_netstring(fields: HashMap<String, Vec<u8>>) -> Self {
+        Fs123Response {
+            fields,
+            json: None,
+            binary_data: None,
+        }
+    }
+
+    /// Create from v8 JSON body.
+    pub fn from_json(json: Value) -> Self {
+        Fs123Response {
+            fields: HashMap::new(),
+            json: Some(json),
+            binary_data: None,
+        }
+    }
+
+    /// Create from v8 binary response (body + header-derived fields).
+    pub fn from_binary(data: Vec<u8>, fields: HashMap<String, Vec<u8>>) -> Self {
+        Fs123Response {
+            fields,
+            json: None,
+            binary_data: Some(data),
+        }
+    }
+
     /// Get a field as a string.
     pub fn get_str(&self, key: &str) -> Option<String> {
+        // Try JSON first
+        if let Some(json) = &self.json {
+            return match json.get(key) {
+                Some(Value::String(s)) => Some(s.clone()),
+                Some(Value::Number(n)) => Some(n.to_string()),
+                Some(v) => Some(v.to_string()),
+                None => None,
+            };
+        }
+        // Fall back to netstring fields
         self.fields
             .get(key)
             .and_then(|v| std::str::from_utf8(v).ok())
@@ -309,38 +351,71 @@ impl Fs123Response {
         self.fields.get(key).map(|v| v.as_slice())
     }
 
-    /// Get the content field as bytes.
+    /// Get the content field as bytes (v7) or binary data (v8 binary endpoints).
     pub fn content(&self) -> Option<&[u8]> {
+        if let Some(data) = &self.binary_data {
+            return Some(data.as_slice());
+        }
         self.get_bytes("content")
     }
 
     /// Get the content field as a string.
     pub fn content_str(&self) -> Option<String> {
+        if let Some(json) = &self.json {
+            return json.get("content").map(|v| v.to_string());
+        }
         self.get_str("content")
+    }
+
+    /// Get the JSON content value (v8 only).
+    pub fn content_json(&self) -> Option<&Value> {
+        self.json.as_ref().and_then(|j| j.get("content"))
     }
 
     /// Get the errno field.
     pub fn errno(&self) -> Option<i32> {
+        if let Some(json) = &self.json {
+            return json.get("errno").and_then(|v| v.as_i64()).map(|v| v as i32);
+        }
         self.get_str("errno").and_then(|s| s.parse().ok())
     }
 
     /// Get the validator field.
     pub fn validator(&self) -> Option<u64> {
+        if let Some(json) = &self.json {
+            return json.get("validator").and_then(|v| v.as_u64());
+        }
         self.get_str("validator").and_then(|s| s.parse().ok())
     }
 
     /// Get the estalecookie field.
     pub fn estalecookie(&self) -> Option<u64> {
+        if let Some(json) = &self.json {
+            return json.get("estalecookie").and_then(|v| v.as_u64());
+        }
         self.get_str("estalecookie").and_then(|s| s.parse().ok())
     }
 
     /// Get the nextstart field (for directory iteration).
     pub fn nextstart(&self) -> Option<Vec<u8>> {
+        if let Some(json) = &self.json {
+            return json
+                .get("nextstart")
+                .and_then(|v| v.as_str())
+                .map(|s| s.as_bytes().to_vec());
+        }
         self.fields.get("nextstart").cloned()
     }
 
     /// Check if nextstart indicates more entries.
     pub fn has_more_entries(&self) -> bool {
+        if let Some(json) = &self.json {
+            return json
+                .get("nextstart")
+                .and_then(|v| v.as_str())
+                .map(|s| !s.is_empty())
+                .unwrap_or(false);
+        }
         self.fields
             .get("nextstart")
             .map(|v| !v.is_empty())
@@ -372,6 +447,77 @@ impl Fs123HttpClient {
         }
     }
 
+    /// Get the major protocol version.
+    fn major_version(&self) -> u32 {
+        self.proto
+            .split('.')
+            .next()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(7)
+    }
+
+    /// Whether this function uses binary (octet-stream) responses in v8.
+    fn is_binary_endpoint(function: Fs123Function) -> bool {
+        matches!(
+            function,
+            Fs123Function::Read | Fs123Function::Getxattr | Fs123Function::Listxattr
+        )
+    }
+
+    /// Parse an HTTP response into an Fs123Response based on protocol version and endpoint.
+    fn parse_http_response(
+        &self,
+        http_response: ureq::Response,
+        function: Fs123Function,
+    ) -> Result<Fs123Response> {
+        if self.major_version() >= 8 {
+            if Self::is_binary_endpoint(function) {
+                // Binary endpoint: metadata in headers, body is raw bytes
+                let mut fields = HashMap::new();
+                if let Some(errno) = http_response.header("X-Fs123-Errno") {
+                    fields.insert("errno".to_string(), errno.as_bytes().to_vec());
+                }
+                if let Some(val) = http_response.header("X-Fs123-Validator") {
+                    fields.insert("validator".to_string(), val.as_bytes().to_vec());
+                }
+                if let Some(val) = http_response.header("X-Fs123-Estalecookie") {
+                    fields.insert("estalecookie".to_string(), val.as_bytes().to_vec());
+                }
+
+                let mut body = Vec::new();
+                http_response
+                    .into_reader()
+                    .read_to_end(&mut body)
+                    .map_err(Fs123Error::IoError)?;
+
+                Ok(Fs123Response::from_binary(body, fields))
+            } else {
+                // JSON endpoint: parse body as JSON
+                let mut body = Vec::new();
+                http_response
+                    .into_reader()
+                    .read_to_end(&mut body)
+                    .map_err(Fs123Error::IoError)?;
+
+                let json: Value = serde_json::from_slice(&body).map_err(|e| {
+                    Fs123Error::ProtocolError(format!("Invalid JSON response: {}", e))
+                })?;
+
+                Ok(Fs123Response::from_json(json))
+            }
+        } else {
+            // v7: netstring response
+            let mut body = Vec::new();
+            http_response
+                .into_reader()
+                .read_to_end(&mut body)
+                .map_err(Fs123Error::IoError)?;
+
+            let fields = parse_response(&body);
+            Ok(Fs123Response::from_netstring(fields))
+        }
+    }
+
     /// Send a request to the server.
     pub fn request(
         &self,
@@ -382,7 +528,7 @@ impl Fs123HttpClient {
         let url_path = build_url(&self.proto, function, path, query_params);
         let full_url = format!("http://{}:{}{}", self.host, self.port, url_path);
 
-        let response = self.agent.get(&full_url).call().map_err(|e| match e {
+        let http_response = self.agent.get(&full_url).call().map_err(|e| match e {
             ureq::Error::Status(status, response) => {
                 let body = response.into_string().unwrap_or_default();
                 Fs123Error::HttpError {
@@ -393,17 +539,7 @@ impl Fs123HttpClient {
             ureq::Error::Transport(t) => Fs123Error::ConnectionFailed(t.to_string()),
         })?;
 
-        // Read body
-        let mut body = Vec::new();
-        response
-            .into_reader()
-            .read_to_end(&mut body)
-            .map_err(Fs123Error::IoError)?;
-
-        // Parse netstring response
-        let fields = parse_response(&body);
-
-        let response = Fs123Response { fields };
+        let response = self.parse_http_response(http_response, function)?;
 
         // Check errno
         if let Some(errno) = response.errno() {
@@ -429,7 +565,7 @@ impl Fs123HttpClient {
         let url_path = build_url(&self.proto, function, path, query_params);
         let full_url = format!("http://{}:{}{}", self.host, self.port, url_path);
 
-        let response = self.agent.get(&full_url).call().map_err(|e| match e {
+        let http_response = self.agent.get(&full_url).call().map_err(|e| match e {
             ureq::Error::Status(status, response) => {
                 let body = response.into_string().unwrap_or_default();
                 Fs123Error::HttpError {
@@ -440,17 +576,7 @@ impl Fs123HttpClient {
             ureq::Error::Transport(t) => Fs123Error::ConnectionFailed(t.to_string()),
         })?;
 
-        // Read body
-        let mut body = Vec::new();
-        response
-            .into_reader()
-            .read_to_end(&mut body)
-            .map_err(Fs123Error::IoError)?;
-
-        // Parse netstring response
-        let fields = parse_response(&body);
-
-        Ok(Fs123Response { fields })
+        self.parse_http_response(http_response, function)
     }
 
     /// Get the host.

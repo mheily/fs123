@@ -1,6 +1,7 @@
 //! Common types for fs123 protocol responses.
 
 use crate::netstring;
+use serde::{Deserialize, Serialize};
 
 /// Directory entry type constants (from dirent.h).
 pub mod d_type {
@@ -16,7 +17,7 @@ pub mod d_type {
 }
 
 /// Result of a stat operation.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Fs123StatResult {
     pub st_mode: u32,
     pub st_nlink: u64,
@@ -84,7 +85,7 @@ impl Fs123StatResult {
 }
 
 /// Result of a statvfs operation.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Fs123StatvfsResult {
     pub f_bsize: u64,
     pub f_frsize: u64,
@@ -126,7 +127,7 @@ impl Fs123StatvfsResult {
 }
 
 /// A directory entry.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DirEntryData {
     /// Entry name
     pub name: String,

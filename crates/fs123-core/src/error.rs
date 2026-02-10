@@ -17,6 +17,9 @@ pub enum Fs123Error {
     #[error("Invalid response: {0}")]
     InvalidResponse(String),
 
+    #[error("Protocol error: {0}")]
+    ProtocolError(String),
+
     #[error("Filesystem error {errno}: {message}")]
     FilesystemError { errno: i32, message: String },
 
@@ -56,6 +59,7 @@ impl Fs123Error {
                 }
             }
             Fs123Error::InvalidResponse(_) => libc::EIO,
+            Fs123Error::ProtocolError(_) => libc::EIO,
             Fs123Error::InvalidUrl(_) => libc::EINVAL,
             Fs123Error::InvalidArgument(_) => libc::EINVAL,
             Fs123Error::Closed => libc::EBADF,
