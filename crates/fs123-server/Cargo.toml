@@ -24,7 +24,6 @@ clap = { version = "4", features = ["derive"] }
 async-trait = "0.1"
 url = "2"
 uuid = { version = "1", features = ["v4"] }
-serde_json = "1"
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"], optional = true }
 
 [features]
@@ -36,4 +35,3 @@ reqwest = { version = "0.11", features = ["blocking", "json"] }
 serde_json = "1"
 tempfile = "3"
 nix = { version = "0.29", features = ["signal", "process"] }
-serde_json = "1"

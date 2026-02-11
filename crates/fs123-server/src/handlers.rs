@@ -520,14 +520,14 @@ fn get_writable_backend(config: &ServerConfig) -> Result<&Arc<dyn WritableBacken
     })
 }
 
-/// Helper: build success response (errno=0) with no cache
+/// Helper: build JSON success response (errno=0) with no cache
 fn write_ok() -> HttpResponse {
-    Fs123ResponseBuilder::new().errno(0).max_age(0).build()
+    Fs123ResponseBuilder::new().errno(0).max_age(0).build_json()
 }
 
-/// Helper: build error response from BackendError with no cache
+/// Helper: build JSON error response from BackendError with no cache
 fn write_err(e: crate::backends::BackendError) -> HttpResponse {
-    Fs123ResponseBuilder::new().errno(e.errno).max_age(0).build()
+    Fs123ResponseBuilder::new().errno(e.errno).max_age(0).build_json()
 }
 
 /// Handle mkdir - query: mode
