@@ -28,6 +28,10 @@ struct Args {
     /// Default stale-while-revalidate for Cache-Control header (seconds)
     #[arg(long, default_value = "60")]
     stale_while_revalidate: u32,
+
+    /// Enable v8 write operations
+    #[arg(long)]
+    writable: bool,
 }
 
 /// Main request handler that routes to specific function handlers
@@ -114,9 +118,17 @@ async fn main() -> std::io::Result<()> {
         .await
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
 
+    let writable_backend = if args.writable {
+        Some(backends::create_writable_backend(&url)
+            .await
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?)
+    } else {
+        None
+    };
+
     let config = ServerConfig {
         backend,
-        writable_backend: None,
+        writable_backend,
         default_max_age: args.max_age,
         default_stale_while_revalidate: args.stale_while_revalidate,
     };

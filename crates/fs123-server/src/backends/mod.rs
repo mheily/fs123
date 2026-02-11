@@ -109,6 +109,25 @@ pub async fn create_backend(url: &Url) -> Result<Arc<dyn Backend>, String> {
     }
 }
 
+/// Create a writable backend from a parsed URL
+pub async fn create_writable_backend(url: &Url) -> Result<Arc<dyn WritableBackend>, String> {
+    let mut estalecookie_src = EstaleCookieSource::GetVersionIoctl;
+    for (key, value) in url.query_pairs() {
+        if key == "estalecookie" {
+            estalecookie_src = parse_estale_cookie_source(value.as_ref())?;
+        }
+    }
+
+    match url.scheme() {
+        "file" => {
+            let path_buf = PathBuf::from(url.path());
+            let backend = FileBackend::with_estale_strategy(path_buf, estalecookie_src);
+            Ok(Arc::new(backend))
+        }
+        scheme => Err(format!("Writable backend not supported for scheme: {}", scheme)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
