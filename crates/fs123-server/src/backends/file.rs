@@ -1,16 +1,18 @@
 /// FileBackend - serves files from the local filesystem
 
 use async_trait::async_trait;
+use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::MetadataExt;
-use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
+use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
+use std::time::{Instant, UNIX_EPOCH};
 
 use super::traits::{Backend, WritableBackend};
 use super::types::{
     AttributeInfo, BackendError, BackendResult, DirEntry, DirectoryListing, FileContent,
-    StatfsInfo,
+    StatfsInfo, UploadSession,
 };
 
 /// Strategy for computing ESTALE cookies
@@ -31,6 +33,7 @@ pub enum EstaleCookieSource {
 pub struct FileBackend {
     root: PathBuf,
     estalecookie_src: EstaleCookieSource,
+    uploads: Arc<RwLock<HashMap<String, UploadSession>>>,
 }
 
 impl FileBackend {
@@ -39,6 +42,7 @@ impl FileBackend {
         FileBackend {
             root,
             estalecookie_src: EstaleCookieSource::GetVersionIoctl,
+            uploads: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -47,6 +51,7 @@ impl FileBackend {
         FileBackend {
             root,
             estalecookie_src,
+            uploads: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -63,147 +68,23 @@ impl FileBackend {
         mtime.duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() as u64
     }
 
-    /// Xattr name used to mark a file as having an active write session.
-    const WRITE_SESSION_XATTR: &'static str = "user.fs123.write_session_active";
-
-    /// Set an extended attribute on a path.
-    fn set_xattr(path: &Path, name: &str, value: &[u8]) -> std::io::Result<()> {
-        let c_path = std::ffi::CString::new(path.to_string_lossy().as_bytes())
-            .map_err(|_| std::io::Error::from_raw_os_error(libc::EINVAL))?;
-        let c_name = std::ffi::CString::new(name)
-            .map_err(|_| std::io::Error::from_raw_os_error(libc::EINVAL))?;
-        let ret = unsafe {
-            #[cfg(target_os = "linux")]
-            {
-                libc::setxattr(
-                    c_path.as_ptr(),
-                    c_name.as_ptr(),
-                    value.as_ptr() as *const libc::c_void,
-                    value.len(),
-                    0,
-                )
-            }
-            #[cfg(target_os = "macos")]
-            {
-                libc::setxattr(
-                    c_path.as_ptr(),
-                    c_name.as_ptr(),
-                    value.as_ptr() as *const libc::c_void,
-                    value.len(),
-                    0,
-                    0,
-                )
-            }
-        };
-        if ret != 0 {
-            Err(std::io::Error::last_os_error())
-        } else {
-            Ok(())
-        }
+    /// Get the uploads directory, creating it if needed
+    fn uploads_dir(&self) -> PathBuf {
+        self.root.join(".fs123_uploads")
     }
 
-    /// Get an extended attribute value from a path. Returns None if not found.
-    fn get_xattr_value(path: &Path, name: &str) -> std::io::Result<Option<Vec<u8>>> {
-        let c_path = std::ffi::CString::new(path.to_string_lossy().as_bytes())
-            .map_err(|_| std::io::Error::from_raw_os_error(libc::EINVAL))?;
-        let c_name = std::ffi::CString::new(name)
-            .map_err(|_| std::io::Error::from_raw_os_error(libc::EINVAL))?;
-        let size = unsafe {
-            #[cfg(target_os = "linux")]
-            {
-                libc::getxattr(
-                    c_path.as_ptr(),
-                    c_name.as_ptr(),
-                    std::ptr::null_mut(),
-                    0,
-                )
+    /// Remove upload sessions older than the given timeout, deleting their temp files.
+    pub fn reap_stale_uploads(&self, timeout: std::time::Duration) {
+        let now = Instant::now();
+        let mut uploads = self.uploads.write().unwrap();
+        uploads.retain(|_id, session| {
+            if now.duration_since(session.created_at) > timeout {
+                let _ = fs::remove_file(&session.temp_path);
+                false
+            } else {
+                true
             }
-            #[cfg(target_os = "macos")]
-            {
-                libc::getxattr(
-                    c_path.as_ptr(),
-                    c_name.as_ptr(),
-                    std::ptr::null_mut(),
-                    0,
-                    0,
-                    0,
-                )
-            }
-        };
-        if size < 0 {
-            let err = std::io::Error::last_os_error();
-            #[cfg(target_os = "linux")]
-            let not_found = err.raw_os_error() == Some(libc::ENODATA);
-            #[cfg(target_os = "macos")]
-            let not_found = err.raw_os_error() == Some(libc::ENOATTR);
-            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-            let not_found = false;
-            if not_found {
-                return Ok(None);
-            }
-            return Err(err);
-        }
-        let mut buf = vec![0u8; size as usize];
-        let ret = unsafe {
-            #[cfg(target_os = "linux")]
-            {
-                libc::getxattr(
-                    c_path.as_ptr(),
-                    c_name.as_ptr(),
-                    buf.as_mut_ptr() as *mut libc::c_void,
-                    buf.len(),
-                )
-            }
-            #[cfg(target_os = "macos")]
-            {
-                libc::getxattr(
-                    c_path.as_ptr(),
-                    c_name.as_ptr(),
-                    buf.as_mut_ptr() as *mut libc::c_void,
-                    buf.len(),
-                    0,
-                    0,
-                )
-            }
-        };
-        if ret < 0 {
-            Err(std::io::Error::last_os_error())
-        } else {
-            buf.truncate(ret as usize);
-            Ok(Some(buf))
-        }
-    }
-
-    /// Remove an extended attribute from a path.
-    fn remove_xattr(path: &Path, name: &str) -> std::io::Result<()> {
-        let c_path = std::ffi::CString::new(path.to_string_lossy().as_bytes())
-            .map_err(|_| std::io::Error::from_raw_os_error(libc::EINVAL))?;
-        let c_name = std::ffi::CString::new(name)
-            .map_err(|_| std::io::Error::from_raw_os_error(libc::EINVAL))?;
-        let ret = unsafe {
-            #[cfg(target_os = "linux")]
-            {
-                libc::removexattr(c_path.as_ptr(), c_name.as_ptr())
-            }
-            #[cfg(target_os = "macos")]
-            {
-                libc::removexattr(c_path.as_ptr(), c_name.as_ptr(), 0)
-            }
-        };
-        if ret != 0 {
-            Err(std::io::Error::last_os_error())
-        } else {
-            Ok(())
-        }
-    }
-
-    /// Check if a file has an active write session.
-    fn has_write_session(path: &Path) -> BackendResult<bool> {
-        match Self::get_xattr_value(path, Self::WRITE_SESSION_XATTR) {
-            Ok(Some(v)) => Ok(v == b"true"),
-            Ok(None) => Ok(false),
-            Err(e) => Err(BackendError::from_io_error(&e)),
-        }
+        });
     }
 
     /// Get estalecookie for a file based on the configured strategy
@@ -617,57 +498,72 @@ impl WritableBackend for FileBackend {
         Ok(())
     }
 
-    async fn open_write(&self, path: &str, mode: u32) -> BackendResult<()> {
-        let full_path = self.resolve_path(path);
-        // Create file with O_CREAT|O_EXCL semantics (fails if exists)
-        let file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&full_path)
-            .map_err(|e| BackendError::from_io_error(&e))?;
-        drop(file);
-        // Set mode
-        let c_path = std::ffi::CString::new(full_path.to_string_lossy().as_bytes())
-            .map_err(|_| BackendError::new(libc::EINVAL, "Invalid path"))?;
-        let ret = unsafe { libc::chmod(c_path.as_ptr(), mode as libc::mode_t) };
-        if ret != 0 {
-            // Clean up the file on failure
-            let _ = fs::remove_file(&full_path);
-            return Err(BackendError::from_io_error(&std::io::Error::last_os_error()));
+    async fn create_upload(&self, path: &str, mode: u32) -> BackendResult<String> {
+        let final_path = self.resolve_path(path);
+        // Fail if the file already exists
+        if final_path.exists() {
+            return Err(BackendError::new(libc::EEXIST, "File already exists"));
         }
-        // Set write session xattr
-        Self::set_xattr(&full_path, Self::WRITE_SESSION_XATTR, b"true")
-            .map_err(|e| {
-                let _ = fs::remove_file(&full_path);
-                BackendError::from_io_error(&e)
-            })?;
-        Ok(())
+        let upload_id = uuid::Uuid::new_v4().to_string();
+        let uploads_dir = self.uploads_dir();
+        fs::create_dir_all(&uploads_dir).map_err(|e| BackendError::from_io_error(&e))?;
+        let temp_path = uploads_dir.join(&upload_id);
+        // Create empty temp file
+        fs::File::create(&temp_path).map_err(|e| BackendError::from_io_error(&e))?;
+        let session = UploadSession {
+            upload_id: upload_id.clone(),
+            path: path.to_string(),
+            mode,
+            next_part: 0,
+            created_at: Instant::now(),
+            temp_path,
+        };
+        self.uploads.write().unwrap().insert(upload_id.clone(), session);
+        Ok(upload_id)
     }
 
-    async fn write_data(&self, path: &str, data: &[u8]) -> BackendResult<()> {
-        let full_path = self.resolve_path(path);
-        // Verify write session is active
-        if !Self::has_write_session(&full_path)? {
-            return Err(BackendError::new(libc::EACCES, "No active write session"));
-        }
-        // Append data
+    async fn upload_part(&self, upload_id: &str, part_number: u32, data: &[u8]) -> BackendResult<()> {
+        let temp_path = {
+            let mut uploads = self.uploads.write().unwrap();
+            let session = uploads.get_mut(upload_id)
+                .ok_or_else(|| BackendError::new(libc::ENOENT, "Unknown upload_id"))?;
+            if part_number != session.next_part {
+                return Err(BackendError::new(libc::EINVAL,
+                    format!("Expected part {}, got {}", session.next_part, part_number)));
+            }
+            session.next_part += 1;
+            session.temp_path.clone()
+        };
         let mut file = fs::OpenOptions::new()
             .append(true)
-            .open(&full_path)
+            .open(&temp_path)
             .map_err(|e| BackendError::from_io_error(&e))?;
         file.write_all(data).map_err(|e| BackendError::from_io_error(&e))?;
         Ok(())
     }
 
-    async fn close_write(&self, path: &str) -> BackendResult<()> {
-        let full_path = self.resolve_path(path);
-        // Verify write session is active
-        if !Self::has_write_session(&full_path)? {
-            return Err(BackendError::new(libc::EINVAL, "No active write session"));
+    async fn complete_upload(&self, upload_id: &str) -> BackendResult<()> {
+        let session = self.uploads.write().unwrap().remove(upload_id)
+            .ok_or_else(|| BackendError::new(libc::ENOENT, "Unknown upload_id"))?;
+        let final_path = self.resolve_path(&session.path);
+        // Set mode on temp file before rename
+        let c_path = std::ffi::CString::new(session.temp_path.to_string_lossy().as_bytes())
+            .map_err(|_| BackendError::new(libc::EINVAL, "Invalid path"))?;
+        let ret = unsafe { libc::chmod(c_path.as_ptr(), session.mode as libc::mode_t) };
+        if ret != 0 {
+            let _ = fs::remove_file(&session.temp_path);
+            return Err(BackendError::from_io_error(&std::io::Error::last_os_error()));
         }
-        // Remove write session xattr
-        Self::remove_xattr(&full_path, Self::WRITE_SESSION_XATTR)
+        // Atomic rename
+        fs::rename(&session.temp_path, &final_path)
             .map_err(|e| BackendError::from_io_error(&e))?;
+        Ok(())
+    }
+
+    async fn abort_upload(&self, upload_id: &str) -> BackendResult<()> {
+        let session = self.uploads.write().unwrap().remove(upload_id)
+            .ok_or_else(|| BackendError::new(libc::ENOENT, "Unknown upload_id"))?;
+        let _ = fs::remove_file(&session.temp_path);
         Ok(())
     }
 }

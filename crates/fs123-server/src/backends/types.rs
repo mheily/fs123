@@ -100,3 +100,14 @@ impl std::error::Error for BackendError {}
 
 /// Result type for backend operations
 pub type BackendResult<T> = Result<T, BackendError>;
+
+/// An in-progress upload session
+#[derive(Debug, Clone)]
+pub struct UploadSession {
+    pub upload_id: String,
+    pub path: String,
+    pub mode: u32,
+    pub next_part: u32,
+    pub created_at: std::time::Instant,
+    pub temp_path: std::path::PathBuf,
+}

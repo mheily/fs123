@@ -46,10 +46,11 @@ pub enum Fs123Function {
     Setxattr,
     Removexattr,
     Access,
-    // v8 write-once file operations
-    OpenWrite,
-    WriteData,
-    CloseWrite,
+    // v8 upload session operations
+    CreateUpload,
+    UploadPart,
+    CompleteUpload,
+    AbortUpload,
 }
 
 impl Fs123Function {
@@ -81,9 +82,10 @@ impl Fs123Function {
             "setxattr" => Some(Self::Setxattr),
             "removexattr" => Some(Self::Removexattr),
             "access" => Some(Self::Access),
-            "open_write" => Some(Self::OpenWrite),
-            "write" => Some(Self::WriteData),
-            "close_write" => Some(Self::CloseWrite),
+            "create_upload" => Some(Self::CreateUpload),
+            "upload_part" => Some(Self::UploadPart),
+            "complete_upload" => Some(Self::CompleteUpload),
+            "abort_upload" => Some(Self::AbortUpload),
             _ => None,
         }
     }
@@ -116,9 +118,10 @@ impl Fs123Function {
                 Self::Setxattr => "setxattr",
                 Self::Removexattr => "removexattr",
                 Self::Access => "access",
-                Self::OpenWrite => "open_write",
-                Self::WriteData => "write",
-                Self::CloseWrite => "close_write",
+                Self::CreateUpload => "create_upload",
+                Self::UploadPart => "upload_part",
+                Self::CompleteUpload => "complete_upload",
+                Self::AbortUpload => "abort_upload",
             }
         } else {
             match self {
@@ -134,7 +137,7 @@ impl Fs123Function {
                 Self::Mkdir | Self::Rmdir | Self::Chmod | Self::Chown |
                 Self::Utimens | Self::Symlink | Self::Link | Self::Unlink |
                 Self::Rename | Self::Setxattr | Self::Removexattr | Self::Access |
-                Self::OpenWrite | Self::WriteData | Self::CloseWrite => "p",
+                Self::CreateUpload | Self::UploadPart | Self::CompleteUpload | Self::AbortUpload => "p",
             }
         }
     }

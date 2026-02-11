@@ -15,7 +15,7 @@ pub use file::{EstaleCookieSource, FileBackend};
 pub use traits::{Backend, WritableBackend};
 pub use types::{
     AttributeInfo, BackendError, BackendResult, DirEntry, DirectoryListing, FileContent,
-    StatfsInfo,
+    StatfsInfo, UploadSession,
 };
 
 use std::path::PathBuf;

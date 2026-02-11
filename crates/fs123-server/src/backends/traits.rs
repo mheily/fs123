@@ -120,20 +120,23 @@ pub trait WritableBackend: Send + Sync {
         Err(BackendError::new(libc::ENOSYS, "Not implemented"))
     }
 
-    /// Open a file for write-once writing.
-    /// Creates an empty file with O_CREAT|O_EXCL semantics and marks it with an xattr.
-    async fn open_write(&self, _path: &str, _mode: u32) -> BackendResult<()> {
+    /// Create an upload session. Returns the upload_id (UUID).
+    async fn create_upload(&self, _path: &str, _mode: u32) -> BackendResult<String> {
         Err(BackendError::new(libc::ENOSYS, "Not implemented"))
     }
 
-    /// Append data to a file opened for writing.
-    /// Verifies the write session xattr is present before allowing writes.
-    async fn write_data(&self, _path: &str, _data: &[u8]) -> BackendResult<()> {
+    /// Upload a numbered part to an existing session. Parts must be sequential starting at 0.
+    async fn upload_part(&self, _upload_id: &str, _part_number: u32, _data: &[u8]) -> BackendResult<()> {
         Err(BackendError::new(libc::ENOSYS, "Not implemented"))
     }
 
-    /// Close a file opened for writing, removing the write session xattr.
-    async fn close_write(&self, _path: &str) -> BackendResult<()> {
+    /// Complete an upload session, atomically renaming the temp file to the final path.
+    async fn complete_upload(&self, _upload_id: &str) -> BackendResult<()> {
+        Err(BackendError::new(libc::ENOSYS, "Not implemented"))
+    }
+
+    /// Abort an upload session, deleting the temp file.
+    async fn abort_upload(&self, _upload_id: &str) -> BackendResult<()> {
         Err(BackendError::new(libc::ENOSYS, "Not implemented"))
     }
 }

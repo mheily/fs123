@@ -732,8 +732,24 @@ pub async fn handle_removexattr(request: Fs123Request, config: &ServerConfig) ->
     }
 }
 
-/// Handle open_write - query: mode
-pub async fn handle_open_write(request: Fs123Request, config: &ServerConfig) -> HttpResponse {
+/// Helper: build JSON success response with extra fields
+fn write_ok_json_with(extra: serde_json::Value) -> HttpResponse {
+    let mut obj = serde_json::json!({"errno": 0});
+    if let (Some(base), Some(ext)) = (obj.as_object_mut(), extra.as_object()) {
+        for (k, v) in ext {
+            base.insert(k.clone(), v.clone());
+        }
+    }
+    HttpResponse::Ok().json(obj)
+}
+
+/// Helper: build JSON error response
+fn write_err_json(errno: i32) -> HttpResponse {
+    HttpResponse::Ok().json(serde_json::json!({"errno": errno}))
+}
+
+/// Handle create_upload - query: mode
+pub async fn handle_create_upload(request: Fs123Request, config: &ServerConfig) -> HttpResponse {
     let wb = match get_writable_backend(config) {
         Ok(wb) => wb,
         Err(resp) => return resp,
@@ -745,33 +761,61 @@ pub async fn handle_open_write(request: Fs123Request, config: &ServerConfig) -> 
         Ok(v) => v,
         Err(_) => return Fs123ResponseBuilder::build_error(400, "Invalid mode parameter"),
     };
-    match wb.open_write(&request.path, mode).await {
-        Ok(()) => write_ok(),
-        Err(e) => write_err(e),
+    match wb.create_upload(&request.path, mode).await {
+        Ok(upload_id) => write_ok_json_with(serde_json::json!({"upload_id": upload_id})),
+        Err(e) => write_err_json(e.errno),
     }
 }
 
-/// Handle write - data in request body
-pub async fn handle_write_data(request: Fs123Request, config: &ServerConfig, body: &[u8]) -> HttpResponse {
+/// Handle upload_part - query: upload_id;part_number, data in request body
+pub async fn handle_upload_part(request: Fs123Request, config: &ServerConfig, body: &[u8]) -> HttpResponse {
     let wb = match get_writable_backend(config) {
         Ok(wb) => wb,
         Err(resp) => return resp,
     };
-    match wb.write_data(&request.path, body).await {
-        Ok(()) => write_ok(),
-        Err(e) => write_err(e),
+    if request.query_params.len() < 2 {
+        return Fs123ResponseBuilder::build_error(400, "Missing upload_id;part_number parameters");
+    }
+    let upload_id = &request.query_params[0];
+    let part_number: u32 = match request.query_params[1].parse() {
+        Ok(v) => v,
+        Err(_) => return Fs123ResponseBuilder::build_error(400, "Invalid part_number"),
+    };
+    match wb.upload_part(upload_id, part_number, body).await {
+        Ok(()) => HttpResponse::Ok().json(serde_json::json!({"errno": 0})),
+        Err(e) => write_err_json(e.errno),
     }
 }
 
-/// Handle close_write
-pub async fn handle_close_write(request: Fs123Request, config: &ServerConfig) -> HttpResponse {
+/// Handle complete_upload - query: upload_id
+pub async fn handle_complete_upload(request: Fs123Request, config: &ServerConfig) -> HttpResponse {
     let wb = match get_writable_backend(config) {
         Ok(wb) => wb,
         Err(resp) => return resp,
     };
-    match wb.close_write(&request.path).await {
-        Ok(()) => write_ok(),
-        Err(e) => write_err(e),
+    if request.query_params.is_empty() {
+        return Fs123ResponseBuilder::build_error(400, "Missing upload_id parameter");
+    }
+    let upload_id = &request.query_params[0];
+    match wb.complete_upload(upload_id).await {
+        Ok(()) => HttpResponse::Ok().json(serde_json::json!({"errno": 0})),
+        Err(e) => write_err_json(e.errno),
+    }
+}
+
+/// Handle abort_upload - query: upload_id
+pub async fn handle_abort_upload(request: Fs123Request, config: &ServerConfig) -> HttpResponse {
+    let wb = match get_writable_backend(config) {
+        Ok(wb) => wb,
+        Err(resp) => return resp,
+    };
+    if request.query_params.is_empty() {
+        return Fs123ResponseBuilder::build_error(400, "Missing upload_id parameter");
+    }
+    let upload_id = &request.query_params[0];
+    match wb.abort_upload(upload_id).await {
+        Ok(()) => HttpResponse::Ok().json(serde_json::json!({"errno": 0})),
+        Err(e) => write_err_json(e.errno),
     }
 }
 
