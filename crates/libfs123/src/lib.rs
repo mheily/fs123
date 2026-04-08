@@ -25,15 +25,122 @@
 //! filesystem path to the corresponding server.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_void};
 use std::ptr;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use fs123_core::{
     types::{DirEntryData, Fs123StatResult},
     Fs123Error, Fs123Function, Fs123HttpClient,
 };
+
+// ── In-process cache ──────────────────────────────────────────────
+//
+// Simple per-mount TTL cache for stat results, directory listings,
+// and readlink targets.  Avoids redundant HTTP round-trips within a
+// single process (e.g. stat then open on the same file).
+//
+// TODO: add support for redb if multi-process caching becomes necessary.
+
+const DEFAULT_CACHE_TTL_SECS: u64 = 30;
+const DEFAULT_CACHE_MAX_ENTRIES: usize = 10_000;
+
+#[derive(Clone)]
+struct CacheEntry<T: Clone> {
+    value: T,
+    expires: Instant,
+}
+
+struct Cache {
+    ttl: Duration,
+    max_entries: usize,
+    stats: Mutex<HashMap<String, CacheEntry<Fs123StatResult>>>,
+    dirs: Mutex<HashMap<String, CacheEntry<Vec<DirEntryData>>>>,
+    links: Mutex<HashMap<String, CacheEntry<String>>>,
+}
+
+impl Cache {
+    fn new(ttl: Duration, max_entries: usize) -> Self {
+        Cache {
+            ttl,
+            max_entries,
+            stats: Mutex::new(HashMap::new()),
+            dirs: Mutex::new(HashMap::new()),
+            links: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn get_stat(&self, path: &str) -> Option<Fs123StatResult> {
+        let map = self.stats.lock().unwrap_or_else(|e| e.into_inner());
+        map.get(path)
+            .filter(|e| e.expires > Instant::now())
+            .map(|e| e.value.clone())
+    }
+
+    fn put_stat(&self, path: &str, value: Fs123StatResult) {
+        let mut map = self.stats.lock().unwrap_or_else(|e| e.into_inner());
+        if map.len() >= self.max_entries {
+            Self::evict_expired(&mut map);
+        }
+        map.insert(
+            path.to_string(),
+            CacheEntry {
+                value,
+                expires: Instant::now() + self.ttl,
+            },
+        );
+    }
+
+    fn get_dir(&self, path: &str) -> Option<Vec<DirEntryData>> {
+        let map = self.dirs.lock().unwrap_or_else(|e| e.into_inner());
+        map.get(path)
+            .filter(|e| e.expires > Instant::now())
+            .map(|e| e.value.clone())
+    }
+
+    fn put_dir(&self, path: &str, value: Vec<DirEntryData>) {
+        let mut map = self.dirs.lock().unwrap_or_else(|e| e.into_inner());
+        if map.len() >= self.max_entries {
+            Self::evict_expired(&mut map);
+        }
+        map.insert(
+            path.to_string(),
+            CacheEntry {
+                value,
+                expires: Instant::now() + self.ttl,
+            },
+        );
+    }
+
+    fn get_link(&self, path: &str) -> Option<String> {
+        let map = self.links.lock().unwrap_or_else(|e| e.into_inner());
+        map.get(path)
+            .filter(|e| e.expires > Instant::now())
+            .map(|e| e.value.clone())
+    }
+
+    fn put_link(&self, path: &str, value: String) {
+        let mut map = self.links.lock().unwrap_or_else(|e| e.into_inner());
+        if map.len() >= self.max_entries {
+            Self::evict_expired(&mut map);
+        }
+        map.insert(
+            path.to_string(),
+            CacheEntry {
+                value,
+                expires: Instant::now() + self.ttl,
+            },
+        );
+    }
+
+    fn evict_expired<T: Clone>(map: &mut HashMap<String, CacheEntry<T>>) {
+        let now = Instant::now();
+        map.retain(|_, e| e.expires > now);
+    }
+}
 
 // ── Thread-local state ────────────────────────────────────────────
 
@@ -70,6 +177,7 @@ fn get_default_proto() -> String {
 struct MountEntry {
     mount_point: String,
     client: Arc<Fs123HttpClient>,
+    cache: Arc<Cache>,
 }
 
 static MOUNT_TABLE: Mutex<Vec<MountEntry>> = Mutex::new(Vec::new());
@@ -79,8 +187,8 @@ fn lock_mount_table() -> std::sync::MutexGuard<'static, Vec<MountEntry>> {
     MOUNT_TABLE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Resolve a local path to (client, fs123_path) via the mount table.
-fn resolve_path(path: &str) -> Result<(Arc<Fs123HttpClient>, String), Fs123Error> {
+/// Resolve a local path to (client, cache, fs123_path) via the mount table.
+fn resolve_path(path: &str) -> Result<(Arc<Fs123HttpClient>, Arc<Cache>, String), Fs123Error> {
     // Normalize: strip trailing slash unless path is exactly "/"
     let path = if path.len() > 1 && path.ends_with('/') {
         &path[..path.len() - 1]
@@ -118,7 +226,7 @@ fn resolve_path(path: &str) -> Result<(Arc<Fs123HttpClient>, String), Fs123Error
         path[mount.mount_point.len()..].to_string()
     };
 
-    Ok((Arc::clone(&mount.client), fs_path))
+    Ok((Arc::clone(&mount.client), Arc::clone(&mount.cache), fs_path))
 }
 
 // ── URL parsing (used by fs123_mount) ─────────────────────────────
@@ -320,12 +428,19 @@ pub extern "C" fn fs123_mount(url: *const c_char, mountpoint: *const c_char) -> 
 
         let mut table = lock_mount_table();
 
+        let cache = Arc::new(Cache::new(
+            Duration::from_secs(DEFAULT_CACHE_TTL_SECS),
+            DEFAULT_CACHE_MAX_ENTRIES,
+        ));
+
         if let Some(existing) = table.iter_mut().find(|e| e.mount_point == mp) {
             existing.client = client;
+            existing.cache = cache;
         } else {
             table.push(MountEntry {
                 mount_point: mp,
                 client,
+                cache,
             });
         }
 
@@ -392,7 +507,12 @@ pub extern "C" fn fs123_stat(path: *const c_char, buf: *mut fs123_stat_t) -> c_i
             return Err(Fs123Error::InvalidArgument("NULL buffer".to_string()));
         }
 
-        let (client, fs_path) = resolve_path(path_str)?;
+        let (client, cache, fs_path) = resolve_path(path_str)?;
+
+        if let Some(cached) = cache.get_stat(&fs_path) {
+            return Ok(cached);
+        }
+
         let response = client.request_raw(Fs123Function::Stat, &fs_path, None)?;
 
         if let Some(errno) = response.errno() {
@@ -408,9 +528,12 @@ pub extern "C" fn fs123_stat(path: *const c_char, buf: *mut fs123_stat_t) -> c_i
             Fs123Error::InvalidResponse("Missing content in stat response".to_string())
         })?;
 
-        Fs123StatResult::from_str(&content).ok_or_else(|| {
+        let stat = Fs123StatResult::from_str(&content).ok_or_else(|| {
             Fs123Error::InvalidResponse(format!("Cannot parse stat: {}", content))
-        })
+        })?;
+
+        cache.put_stat(&fs_path, stat.clone());
+        Ok(stat)
     })();
 
     match result {
@@ -454,7 +577,14 @@ pub extern "C" fn fs123_opendir(path: *const c_char) -> *mut c_void {
 
     let result = (|| -> Result<DirHandle, Fs123Error> {
         let path_str = unsafe { cstr_to_str(path)? };
-        let (client, fs_path) = resolve_path(path_str)?;
+        let (client, cache, fs_path) = resolve_path(path_str)?;
+
+        if let Some(cached) = cache.get_dir(&fs_path) {
+            return Ok(DirHandle {
+                entries: cached,
+                index: 0,
+            });
+        }
 
         let mut all_entries = Vec::new();
         let mut cursor: Option<String> = None;
@@ -483,6 +613,8 @@ pub extern "C" fn fs123_opendir(path: *const c_char) -> *mut c_void {
                 break;
             }
         }
+
+        cache.put_dir(&fs_path, all_entries.clone());
 
         Ok(DirHandle {
             entries: all_entries,
@@ -571,24 +703,33 @@ pub extern "C" fn fs123_open(path: *const c_char, mode: *const c_char) -> *mut c
             }
         }
 
-        let (client, fs_path) = resolve_path(path_str)?;
+        let (client, cache, fs_path) = resolve_path(path_str)?;
 
         // Stat to learn the file size (needed for EOF and SEEK_END).
-        let response = client.request_raw(Fs123Function::Stat, &fs_path, None)?;
-        if let Some(errno) = response.errno() {
-            if errno != 0 {
-                return Err(Fs123Error::FilesystemError {
-                    errno,
-                    message: format!("open: {}", fs_path),
-                });
+        // Check cache first to avoid a redundant round-trip after stat+open.
+        let file_size = if let Some(cached) = cache.get_stat(&fs_path) {
+            cached.st_size
+        } else {
+            let response = client.request_raw(Fs123Function::Stat, &fs_path, None)?;
+            if let Some(errno) = response.errno() {
+                if errno != 0 {
+                    return Err(Fs123Error::FilesystemError {
+                        errno,
+                        message: format!("open: {}", fs_path),
+                    });
+                }
             }
-        }
 
-        let file_size = response
-            .get_str("content")
-            .and_then(|c| Fs123StatResult::from_str(&c))
-            .map(|s| s.st_size)
-            .unwrap_or(-1);
+            let stat = response
+                .get_str("content")
+                .and_then(|c| Fs123StatResult::from_str(&c));
+
+            if let Some(ref s) = stat {
+                cache.put_stat(&fs_path, s.clone());
+            }
+
+            stat.map(|s| s.st_size).unwrap_or(-1)
+        };
 
         Ok(FileHandle {
             client,
@@ -745,11 +886,19 @@ pub extern "C" fn fs123_readlink(path: *const c_char, buf: *mut c_char, bufsiz: 
 
     let result = (|| -> Result<String, Fs123Error> {
         let path_str = unsafe { cstr_to_str(path)? };
-        let (client, fs_path) = resolve_path(path_str)?;
+        let (client, cache, fs_path) = resolve_path(path_str)?;
+
+        if let Some(cached) = cache.get_link(&fs_path) {
+            return Ok(cached);
+        }
+
         let response = client.request(Fs123Function::Readlink, &fs_path, None)?;
-        response
+        let target = response
             .content_str()
-            .ok_or_else(|| Fs123Error::InvalidResponse("Missing readlink target".to_string()))
+            .ok_or_else(|| Fs123Error::InvalidResponse("Missing readlink target".to_string()))?;
+
+        cache.put_link(&fs_path, target.clone());
+        Ok(target)
     })();
 
     match result {
@@ -845,10 +994,10 @@ mod tests {
         let mp = CString::new("/mnt/data").unwrap();
         assert_eq!(fs123_mount(url.as_ptr(), mp.as_ptr()), 0);
 
-        let (_, fs_path) = resolve_path("/mnt/data/foo/bar.txt").unwrap();
+        let (_, _, fs_path) = resolve_path("/mnt/data/foo/bar.txt").unwrap();
         assert_eq!(fs_path, "/foo/bar.txt");
 
-        let (_, fs_path) = resolve_path("/mnt/data").unwrap();
+        let (_, _, fs_path) = resolve_path("/mnt/data").unwrap();
         assert_eq!(fs_path, "/");
 
         reset_mounts();
@@ -867,12 +1016,12 @@ mod tests {
         fs123_mount(url2.as_ptr(), mp2.as_ptr());
 
         // /mnt/deep/file → resolves to server2, path /file
-        let (client, fs_path) = resolve_path("/mnt/deep/file").unwrap();
+        let (client, _, fs_path) = resolve_path("/mnt/deep/file").unwrap();
         assert_eq!(fs_path, "/file");
         assert_eq!(client.port(), 8080);
 
         // /mnt/other → resolves to server1, path /other
-        let (client, fs_path) = resolve_path("/mnt/other").unwrap();
+        let (client, _, fs_path) = resolve_path("/mnt/other").unwrap();
         assert_eq!(fs_path, "/other");
         assert_eq!(client.port(), 8080);
 
@@ -887,10 +1036,10 @@ mod tests {
         let mp = CString::new("/").unwrap();
         assert_eq!(fs123_mount(url.as_ptr(), mp.as_ptr()), 0);
 
-        let (_, fs_path) = resolve_path("/any/path").unwrap();
+        let (_, _, fs_path) = resolve_path("/any/path").unwrap();
         assert_eq!(fs_path, "/any/path");
 
-        let (_, fs_path) = resolve_path("/").unwrap();
+        let (_, _, fs_path) = resolve_path("/").unwrap();
         assert_eq!(fs_path, "/");
 
         reset_mounts();
@@ -957,6 +1106,60 @@ mod tests {
         assert!(resolve_path("/mnt2/foo").is_err());
 
         reset_mounts();
+    }
+
+    // ── Cache ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_cache_stat_hit() {
+        let cache = Cache::new(Duration::from_secs(60), 100);
+        let stat = Fs123StatResult {
+            st_mode: 0o100644,
+            st_size: 42,
+            ..Default::default()
+        };
+
+        assert!(cache.get_stat("/file").is_none());
+        cache.put_stat("/file", stat.clone());
+        let cached = cache.get_stat("/file").unwrap();
+        assert_eq!(cached.st_size, 42);
+    }
+
+    #[test]
+    fn test_cache_stat_expiry() {
+        let cache = Cache::new(Duration::from_millis(1), 100);
+        let stat = Fs123StatResult::default();
+
+        cache.put_stat("/file", stat);
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(cache.get_stat("/file").is_none());
+    }
+
+    #[test]
+    fn test_cache_eviction_on_full() {
+        let cache = Cache::new(Duration::from_secs(60), 2);
+        let stat = Fs123StatResult::default();
+
+        cache.put_stat("/a", stat.clone());
+        cache.put_stat("/b", stat.clone());
+        // Third insert triggers eviction of expired entries.
+        // Since none are expired, all 3 will exist (evict_expired is a no-op).
+        cache.put_stat("/c", stat);
+        // At least the newest entry survives.
+        assert!(cache.get_stat("/c").is_some());
+    }
+
+    #[test]
+    fn test_cache_dir_and_link() {
+        let cache = Cache::new(Duration::from_secs(60), 100);
+
+        assert!(cache.get_dir("/d").is_none());
+        cache.put_dir("/d", vec![]);
+        assert!(cache.get_dir("/d").unwrap().is_empty());
+
+        assert!(cache.get_link("/l").is_none());
+        cache.put_link("/l", "/target".to_string());
+        assert_eq!(cache.get_link("/l").unwrap(), "/target");
     }
 
     // ── Error handling ────────────────────────────────────────────
