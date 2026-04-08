@@ -7,8 +7,8 @@
  * Usage:
  *
  *   // Mount one or more fs123 servers into a virtual namespace.
- *   fs123_mount("http://server1:8080/exports/data", "/mnt/data");
- *   fs123_mount("http://server2:8080",              "/mnt/logs");
+ *   fs123_mount("http://server1:8080/exports/data", "/mnt/data", NULL);
+ *   fs123_mount("http://server2:8080", "/mnt/logs", "cache_ttl_secs=60");
  *
  *   // Use local-looking paths with every other call.
  *   fs123_stat_t sb;
@@ -104,11 +104,15 @@ void fs123_set_proto(const char *proto);
  * url:        server address, e.g. "http://server:8080/exports/data".
  *             The path component (if any) is used as a selector prefix.
  * mountpoint: absolute path prefix, e.g. "/mnt/data".
+ * options:    comma-separated key=value pairs, or NULL for defaults.
+ *             Recognized keys:
+ *               cache_ttl_secs=N      entry lifetime in seconds (default 30)
+ *               cache_max_entries=N   max entries per cache map (default 10000)
  *
  * Returns 0 on success, -1 on error.
  * Replaces any existing mount at the same mountpoint.
  */
-int fs123_mount(const char *url, const char *mountpoint);
+int fs123_mount(const char *url, const char *mountpoint, const char *options);
 
 /*
  * fs123_umount — unmount a previously mounted path.

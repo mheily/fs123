@@ -9,8 +9,8 @@
 //! First mount one or more fs123 servers into a virtual namespace:
 //!
 //! ```c
-//! fs123_mount("http://server1:8080/exports/data", "/mnt/data");
-//! fs123_mount("http://server2:8080",              "/mnt/logs");
+//! fs123_mount("http://server1:8080/exports/data", "/mnt/data", NULL);
+//! fs123_mount("http://server2:8080", "/mnt/logs", "cache_ttl_secs=60");
 //! ```
 //!
 //! Then use local-looking paths with every other call:
@@ -140,6 +140,58 @@ impl Cache {
         let now = Instant::now();
         map.retain(|_, e| e.expires > now);
     }
+}
+
+/// Per-mount configuration parsed from the options string.
+struct MountOptions {
+    cache_ttl_secs: u64,
+    cache_max_entries: usize,
+}
+
+impl Default for MountOptions {
+    fn default() -> Self {
+        MountOptions {
+            cache_ttl_secs: DEFAULT_CACHE_TTL_SECS,
+            cache_max_entries: DEFAULT_CACHE_MAX_ENTRIES,
+        }
+    }
+}
+
+/// Parse a comma-separated `key=value` options string.
+///
+/// Recognized keys:
+///   - `cache_ttl_secs`     — cache entry lifetime in seconds (default 30)
+///   - `cache_max_entries`   — max entries per cache map (default 10000)
+///
+/// Unknown keys are silently ignored so callers can pass through
+/// application-specific options without breaking.
+fn parse_mount_options(opts: &str) -> Result<MountOptions, Fs123Error> {
+    let mut mo = MountOptions::default();
+
+    for token in opts.split(',') {
+        let token = token.trim();
+        if token.is_empty() {
+            continue;
+        }
+        let (key, value) = token.split_once('=').ok_or_else(|| {
+            Fs123Error::InvalidArgument(format!("Bad mount option (expected key=value): {}", token))
+        })?;
+        match key.trim() {
+            "cache_ttl_secs" => {
+                mo.cache_ttl_secs = value.trim().parse().map_err(|_| {
+                    Fs123Error::InvalidArgument(format!("Invalid cache_ttl_secs: {}", value))
+                })?;
+            }
+            "cache_max_entries" => {
+                mo.cache_max_entries = value.trim().parse().map_err(|_| {
+                    Fs123Error::InvalidArgument(format!("Invalid cache_max_entries: {}", value))
+                })?;
+            }
+            _ => {} // ignore unknown keys
+        }
+    }
+
+    Ok(mo)
 }
 
 // ── Thread-local state ────────────────────────────────────────────
@@ -394,14 +446,30 @@ pub extern "C" fn fs123_set_proto(proto: *const c_char) {
 /// calls, e.g. `"/mnt/data"`.  If a mount already exists at this point
 /// it is silently replaced.
 ///
+/// `options` — optional comma-separated `key=value` pairs, or NULL for
+/// defaults.  Recognized keys:
+///   - `cache_ttl_secs=N`     — per-entry TTL in seconds (default 30)
+///   - `cache_max_entries=N`  — max entries per cache map (default 10000)
+///
 /// Returns 0 on success, -1 on error.
 #[no_mangle]
-pub extern "C" fn fs123_mount(url: *const c_char, mountpoint: *const c_char) -> c_int {
+pub extern "C" fn fs123_mount(
+    url: *const c_char,
+    mountpoint: *const c_char,
+    options: *const c_char,
+) -> c_int {
     clear_error();
 
     let result = (|| -> Result<(), Fs123Error> {
         let url_str = unsafe { cstr_to_str(url)? };
         let mount_str = unsafe { cstr_to_str(mountpoint)? };
+
+        let opts = if options.is_null() {
+            MountOptions::default()
+        } else {
+            let opts_str = unsafe { cstr_to_str(options)? };
+            parse_mount_options(opts_str)?
+        };
 
         if !mount_str.starts_with('/') {
             return Err(Fs123Error::InvalidArgument(
@@ -429,8 +497,8 @@ pub extern "C" fn fs123_mount(url: *const c_char, mountpoint: *const c_char) -> 
         let mut table = lock_mount_table();
 
         let cache = Arc::new(Cache::new(
-            Duration::from_secs(DEFAULT_CACHE_TTL_SECS),
-            DEFAULT_CACHE_MAX_ENTRIES,
+            Duration::from_secs(opts.cache_ttl_secs),
+            opts.cache_max_entries,
         ));
 
         if let Some(existing) = table.iter_mut().find(|e| e.mount_point == mp) {
@@ -992,7 +1060,7 @@ mod tests {
 
         let url = CString::new("http://server1:8080/exports").unwrap();
         let mp = CString::new("/mnt/data").unwrap();
-        assert_eq!(fs123_mount(url.as_ptr(), mp.as_ptr()), 0);
+        assert_eq!(fs123_mount(url.as_ptr(), mp.as_ptr(), ptr::null()), 0);
 
         let (_, _, fs_path) = resolve_path("/mnt/data/foo/bar.txt").unwrap();
         assert_eq!(fs_path, "/foo/bar.txt");
@@ -1012,8 +1080,8 @@ mod tests {
         let url2 = CString::new("http://server2:8080").unwrap();
         let mp2 = CString::new("/mnt/deep").unwrap();
 
-        fs123_mount(url1.as_ptr(), mp1.as_ptr());
-        fs123_mount(url2.as_ptr(), mp2.as_ptr());
+        fs123_mount(url1.as_ptr(), mp1.as_ptr(), ptr::null());
+        fs123_mount(url2.as_ptr(), mp2.as_ptr(), ptr::null());
 
         // /mnt/deep/file → resolves to server2, path /file
         let (client, _, fs_path) = resolve_path("/mnt/deep/file").unwrap();
@@ -1034,7 +1102,7 @@ mod tests {
 
         let url = CString::new("http://server:80").unwrap();
         let mp = CString::new("/").unwrap();
-        assert_eq!(fs123_mount(url.as_ptr(), mp.as_ptr()), 0);
+        assert_eq!(fs123_mount(url.as_ptr(), mp.as_ptr(), ptr::null()), 0);
 
         let (_, _, fs_path) = resolve_path("/any/path").unwrap();
         assert_eq!(fs_path, "/any/path");
@@ -1053,8 +1121,8 @@ mod tests {
         let url2 = CString::new("http://new:80").unwrap();
         let mp = CString::new("/mnt").unwrap();
 
-        fs123_mount(url1.as_ptr(), mp.as_ptr());
-        fs123_mount(url2.as_ptr(), mp.as_ptr());
+        fs123_mount(url1.as_ptr(), mp.as_ptr(), ptr::null());
+        fs123_mount(url2.as_ptr(), mp.as_ptr(), ptr::null());
 
         let table = lock_mount_table();
         assert_eq!(table.len(), 1);
@@ -1070,7 +1138,7 @@ mod tests {
 
         let url = CString::new("http://server:80").unwrap();
         let mp = CString::new("/mnt").unwrap();
-        fs123_mount(url.as_ptr(), mp.as_ptr());
+        fs123_mount(url.as_ptr(), mp.as_ptr(), ptr::null());
 
         assert_eq!(fs123_umount(mp.as_ptr()), 0);
         assert!(resolve_path("/mnt/foo").is_err());
@@ -1100,11 +1168,61 @@ mod tests {
 
         let url = CString::new("http://server:80").unwrap();
         let mp = CString::new("/mnt").unwrap();
-        fs123_mount(url.as_ptr(), mp.as_ptr());
+        fs123_mount(url.as_ptr(), mp.as_ptr(), ptr::null());
 
         // "/mnt2/foo" must NOT match "/mnt"
         assert!(resolve_path("/mnt2/foo").is_err());
 
+        reset_mounts();
+    }
+
+    // ── Mount options ──────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_mount_options_defaults() {
+        let opts = parse_mount_options("").unwrap();
+        assert_eq!(opts.cache_ttl_secs, DEFAULT_CACHE_TTL_SECS);
+        assert_eq!(opts.cache_max_entries, DEFAULT_CACHE_MAX_ENTRIES);
+    }
+
+    #[test]
+    fn test_parse_mount_options_custom() {
+        let opts = parse_mount_options("cache_ttl_secs=120,cache_max_entries=500").unwrap();
+        assert_eq!(opts.cache_ttl_secs, 120);
+        assert_eq!(opts.cache_max_entries, 500);
+    }
+
+    #[test]
+    fn test_parse_mount_options_unknown_ignored() {
+        let opts = parse_mount_options("cache_ttl_secs=10,foo=bar").unwrap();
+        assert_eq!(opts.cache_ttl_secs, 10);
+        assert_eq!(opts.cache_max_entries, DEFAULT_CACHE_MAX_ENTRIES);
+    }
+
+    #[test]
+    fn test_parse_mount_options_bad_value() {
+        assert!(parse_mount_options("cache_ttl_secs=abc").is_err());
+    }
+
+    #[test]
+    fn test_parse_mount_options_no_equals() {
+        assert!(parse_mount_options("badtoken").is_err());
+    }
+
+    #[test]
+    fn test_mount_with_options() {
+        reset_mounts();
+
+        let url = CString::new("http://server:80").unwrap();
+        let mp = CString::new("/mnt").unwrap();
+        let opts = CString::new("cache_ttl_secs=120,cache_max_entries=500").unwrap();
+        assert_eq!(fs123_mount(url.as_ptr(), mp.as_ptr(), opts.as_ptr()), 0);
+
+        let table = lock_mount_table();
+        assert_eq!(table[0].cache.ttl, Duration::from_secs(120));
+        assert_eq!(table[0].cache.max_entries, 500);
+
+        drop(table);
         reset_mounts();
     }
 
@@ -1192,7 +1310,7 @@ mod tests {
         reset_mounts();
         let url = CString::new("http://x:80").unwrap();
         let mp = CString::new("/t").unwrap();
-        fs123_mount(url.as_ptr(), mp.as_ptr());
+        fs123_mount(url.as_ptr(), mp.as_ptr(), ptr::null());
 
         let p = CString::new("/t/file").unwrap();
         assert_eq!(fs123_stat(p.as_ptr(), ptr::null_mut()), -1);
@@ -1215,7 +1333,7 @@ mod tests {
         reset_mounts();
         let url = CString::new("http://x:80").unwrap();
         let mp = CString::new("/t").unwrap();
-        fs123_mount(url.as_ptr(), mp.as_ptr());
+        fs123_mount(url.as_ptr(), mp.as_ptr(), ptr::null());
 
         let p = CString::new("/t/file").unwrap();
         let mode = CString::new("w").unwrap();
@@ -1247,7 +1365,7 @@ mod tests {
         reset_mounts();
         let url = CString::new("http://x:80").unwrap();
         let mp = CString::new("/t").unwrap();
-        fs123_mount(url.as_ptr(), mp.as_ptr());
+        fs123_mount(url.as_ptr(), mp.as_ptr(), ptr::null());
 
         let p = CString::new("/t/link").unwrap();
         assert_eq!(fs123_readlink(p.as_ptr(), ptr::null_mut(), 256), -1);
@@ -1258,7 +1376,7 @@ mod tests {
     fn test_mount_relative_path_rejected() {
         let url = CString::new("http://x:80").unwrap();
         let mp = CString::new("relative").unwrap();
-        assert_eq!(fs123_mount(url.as_ptr(), mp.as_ptr()), -1);
+        assert_eq!(fs123_mount(url.as_ptr(), mp.as_ptr(), ptr::null()), -1);
         assert_eq!(fs123_errno(), libc::EINVAL);
     }
 }
