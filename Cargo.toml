@@ -4,4 +4,5 @@ members = [
     "crates/fs123-core",
     "crates/fs123-client",
     "crates/fs123-server",
+    "crates/libfs123",
 ]
