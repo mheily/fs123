@@ -4,22 +4,31 @@
 //! fs123 HTTP protocol requests.  Designed to be called via FFI from Python,
 //! C, or any language with a C FFI.
 //!
-//! # URL format
+//! # Usage
 //!
-//! All functions accept a URL of the form:
+//! First mount one or more fs123 servers into a virtual namespace:
 //!
-//! ```text
-//! http://host[:port]/path
+//! ```c
+//! fs123_mount("http://server1:8080/exports/data", "/mnt/data");
+//! fs123_mount("http://server2:8080",              "/mnt/logs");
 //! ```
 //!
-//! The path component is the filesystem path on the fs123 server.
-//! The protocol version defaults to 7.3 and can be changed with
-//! [`fs123_set_proto`].
+//! Then use local-looking paths with every other call:
+//!
+//! ```c
+//! fs123_stat("/mnt/data/file.txt", &sb);
+//! void *fh = fs123_open("/mnt/logs/app.log", "r");
+//! ```
+//!
+//! The library resolves each path through the mount table (longest-prefix
+//! match), strips the mount prefix, and sends the remainder as the fs123
+//! filesystem path to the corresponding server.
 
 use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_void};
 use std::ptr;
+use std::sync::{Arc, Mutex};
 
 use fs123_core::{
     types::{DirEntryData, Fs123StatResult},
@@ -56,12 +65,69 @@ fn get_default_proto() -> String {
     DEFAULT_PROTO.with(|p| p.borrow().clone())
 }
 
-// ── URL parsing ───────────────────────────────────────────────────
+// ── Mount table ───────────────────────────────────────────────────
+
+struct MountEntry {
+    mount_point: String,
+    client: Arc<Fs123HttpClient>,
+}
+
+static MOUNT_TABLE: Mutex<Vec<MountEntry>> = Mutex::new(Vec::new());
+
+/// Lock the mount table, recovering from a poisoned mutex if necessary.
+fn lock_mount_table() -> std::sync::MutexGuard<'static, Vec<MountEntry>> {
+    MOUNT_TABLE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Resolve a local path to (client, fs123_path) via the mount table.
+fn resolve_path(path: &str) -> Result<(Arc<Fs123HttpClient>, String), Fs123Error> {
+    // Normalize: strip trailing slash unless path is exactly "/"
+    let path = if path.len() > 1 && path.ends_with('/') {
+        &path[..path.len() - 1]
+    } else {
+        path
+    };
+
+    let table = lock_mount_table();
+
+    let mut best: Option<&MountEntry> = None;
+    for entry in table.iter() {
+        let is_match = if entry.mount_point == "/" {
+            path.starts_with('/')
+        } else {
+            path == entry.mount_point
+                || path.starts_with(&format!("{}/", entry.mount_point))
+        };
+
+        if is_match
+            && (best.is_none() || entry.mount_point.len() > best.unwrap().mount_point.len())
+        {
+            best = Some(entry);
+        }
+    }
+
+    let mount = best.ok_or_else(|| {
+        Fs123Error::InvalidArgument(format!("No fs123 mount for path: {}", path))
+    })?;
+
+    let fs_path = if path.len() <= mount.mount_point.len() {
+        "/".to_string()
+    } else if mount.mount_point == "/" {
+        path.to_string()
+    } else {
+        path[mount.mount_point.len()..].to_string()
+    };
+
+    Ok((Arc::clone(&mount.client), fs_path))
+}
+
+// ── URL parsing (used by fs123_mount) ─────────────────────────────
 
 struct ParsedUrl {
     host: String,
     port: u16,
-    path: String,
+    /// URL path component used as selector prefix in fs123 requests.
+    selector: String,
 }
 
 fn parse_fs123_url(url: &str) -> Result<ParsedUrl, Fs123Error> {
@@ -78,9 +144,9 @@ fn parse_fs123_url(url: &str) -> Result<ParsedUrl, Fs123Error> {
 
     let default_port: u16 = if scheme == "https" { 443 } else { 80 };
 
-    let (host_port, path) = match rest.find('/') {
+    let (host_port, raw_path) = match rest.find('/') {
         Some(pos) => (&rest[..pos], &rest[pos..]),
-        None => (rest, "/"),
+        None => (rest, ""),
     };
 
     let (host, port) = match host_port.rfind(':') {
@@ -97,14 +163,17 @@ fn parse_fs123_url(url: &str) -> Result<ParsedUrl, Fs123Error> {
         return Err(Fs123Error::InvalidUrl("Empty host".to_string()));
     }
 
+    // Normalize: "/" → "", "/foo/" → "/foo", "" → ""
+    let selector = if raw_path.is_empty() || raw_path == "/" {
+        String::new()
+    } else {
+        raw_path.trim_end_matches('/').to_string()
+    };
+
     Ok(ParsedUrl {
         host,
         port,
-        path: if path.is_empty() {
-            "/".to_string()
-        } else {
-            path.to_string()
-        },
+        selector,
     })
 }
 
@@ -158,7 +227,7 @@ pub struct fs123_dirent_t {
 // ── Internal handle types ─────────────────────────────────────────
 
 struct FileHandle {
-    client: Fs123HttpClient,
+    client: Arc<Fs123HttpClient>,
     path: String,
     position: u64,
     file_size: i64,
@@ -193,7 +262,8 @@ pub extern "C" fn fs123_strerror() -> *const c_char {
 
 /// Set the default fs123 protocol version string (e.g. "7.3", "8.0").
 ///
-/// If never called, defaults to "7.3".
+/// Affects subsequent `fs123_mount` calls.  If never called, defaults to
+/// "7.3".  Thread-local.
 #[no_mangle]
 pub extern "C" fn fs123_set_proto(proto: *const c_char) {
     if proto.is_null() {
@@ -204,31 +274,132 @@ pub extern "C" fn fs123_set_proto(proto: *const c_char) {
     }
 }
 
-// ── C API: stat ───────────────────────────────────────────────────
+// ── C API: Mount / Unmount ────────────────────────────────────────
 
-/// Get file/directory attributes for the given fs123 URL.
+/// Mount an fs123 server URL at a local path prefix.
+///
+/// `url` — the server address, e.g. `"http://server:8080/exports/data"`.
+/// The path component (if any) is sent as a URL prefix (selector) in
+/// every request to this server.
+///
+/// `mountpoint` — an absolute path prefix used to resolve subsequent
+/// calls, e.g. `"/mnt/data"`.  If a mount already exists at this point
+/// it is silently replaced.
 ///
 /// Returns 0 on success, -1 on error.
 #[no_mangle]
-pub extern "C" fn fs123_stat(url: *const c_char, buf: *mut fs123_stat_t) -> c_int {
+pub extern "C" fn fs123_mount(url: *const c_char, mountpoint: *const c_char) -> c_int {
     clear_error();
 
-    let result = (|| -> Result<Fs123StatResult, Fs123Error> {
+    let result = (|| -> Result<(), Fs123Error> {
         let url_str = unsafe { cstr_to_str(url)? };
-        if buf.is_null() {
-            return Err(Fs123Error::InvalidArgument("NULL buffer".to_string()));
+        let mount_str = unsafe { cstr_to_str(mountpoint)? };
+
+        if !mount_str.starts_with('/') {
+            return Err(Fs123Error::InvalidArgument(
+                "Mount point must be an absolute path".to_string(),
+            ));
         }
 
         let parsed = parse_fs123_url(url_str)?;
         let proto = get_default_proto();
-        let client = Fs123HttpClient::new(&parsed.host, parsed.port, &proto);
-        let response = client.request_raw(Fs123Function::Stat, &parsed.path, None)?;
+        let client = Arc::new(Fs123HttpClient::new_with_selector(
+            &parsed.host,
+            parsed.port,
+            &proto,
+            &parsed.selector,
+        ));
+
+        // Normalize mount point: strip trailing slash, but keep "/" as-is
+        let mp = mount_str.trim_end_matches('/');
+        let mp = if mp.is_empty() {
+            "/".to_string()
+        } else {
+            mp.to_string()
+        };
+
+        let mut table = lock_mount_table();
+
+        if let Some(existing) = table.iter_mut().find(|e| e.mount_point == mp) {
+            existing.client = client;
+        } else {
+            table.push(MountEntry {
+                mount_point: mp,
+                client,
+            });
+        }
+
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => 0,
+        Err(e) => {
+            set_error(&e);
+            -1
+        }
+    }
+}
+
+/// Unmount a previously mounted fs123 server.
+///
+/// Returns 0 on success, -1 if the mount point was not found.
+#[no_mangle]
+pub extern "C" fn fs123_umount(mountpoint: *const c_char) -> c_int {
+    clear_error();
+
+    let result = (|| -> Result<(), Fs123Error> {
+        let mount_str = unsafe { cstr_to_str(mountpoint)? };
+        let mp = mount_str.trim_end_matches('/');
+        let mp = if mp.is_empty() { "/" } else { mp };
+
+        let mut table = lock_mount_table();
+
+        let before = table.len();
+        table.retain(|e| e.mount_point != mp);
+
+        if table.len() == before {
+            return Err(Fs123Error::InvalidArgument(format!(
+                "Not mounted: {}",
+                mp
+            )));
+        }
+
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => 0,
+        Err(e) => {
+            set_error(&e);
+            -1
+        }
+    }
+}
+
+// ── C API: stat ───────────────────────────────────────────────────
+
+/// Get file/directory attributes for a path in the mount namespace.
+///
+/// Returns 0 on success, -1 on error.
+#[no_mangle]
+pub extern "C" fn fs123_stat(path: *const c_char, buf: *mut fs123_stat_t) -> c_int {
+    clear_error();
+
+    let result = (|| -> Result<Fs123StatResult, Fs123Error> {
+        let path_str = unsafe { cstr_to_str(path)? };
+        if buf.is_null() {
+            return Err(Fs123Error::InvalidArgument("NULL buffer".to_string()));
+        }
+
+        let (client, fs_path) = resolve_path(path_str)?;
+        let response = client.request_raw(Fs123Function::Stat, &fs_path, None)?;
 
         if let Some(errno) = response.errno() {
             if errno != 0 {
                 return Err(Fs123Error::FilesystemError {
                     errno,
-                    message: format!("stat: {}", parsed.path),
+                    message: format!("stat: {}", fs_path),
                 });
             }
         }
@@ -278,14 +449,12 @@ pub extern "C" fn fs123_stat(url: *const c_char, buf: *mut fs123_stat_t) -> c_in
 /// is fetched eagerly (with pagination) so that subsequent `fs123_readdir`
 /// calls are purely local.
 #[no_mangle]
-pub extern "C" fn fs123_opendir(url: *const c_char) -> *mut c_void {
+pub extern "C" fn fs123_opendir(path: *const c_char) -> *mut c_void {
     clear_error();
 
     let result = (|| -> Result<DirHandle, Fs123Error> {
-        let url_str = unsafe { cstr_to_str(url)? };
-        let parsed = parse_fs123_url(url_str)?;
-        let proto = get_default_proto();
-        let client = Fs123HttpClient::new(&parsed.host, parsed.port, &proto);
+        let path_str = unsafe { cstr_to_str(path)? };
+        let (client, fs_path) = resolve_path(path_str)?;
 
         let mut all_entries = Vec::new();
         let mut cursor: Option<String> = None;
@@ -298,7 +467,7 @@ pub extern "C" fn fs123_opendir(url: *const c_char) -> *mut c_void {
             let params_ref: Vec<&str> = params.iter().map(|s| s.as_str()).collect();
 
             let response =
-                client.request(Fs123Function::Readdir, &parsed.path, Some(&params_ref))?;
+                client.request(Fs123Function::Readdir, &fs_path, Some(&params_ref))?;
 
             if let Some(content) = response.content() {
                 all_entries.extend(DirEntryData::parse_entries(content));
@@ -386,11 +555,11 @@ pub extern "C" fn fs123_closedir(dir: *mut c_void) {
 ///
 /// Returns an opaque handle, or NULL on error.
 #[no_mangle]
-pub extern "C" fn fs123_open(url: *const c_char, mode: *const c_char) -> *mut c_void {
+pub extern "C" fn fs123_open(path: *const c_char, mode: *const c_char) -> *mut c_void {
     clear_error();
 
     let result = (|| -> Result<FileHandle, Fs123Error> {
-        let url_str = unsafe { cstr_to_str(url)? };
+        let path_str = unsafe { cstr_to_str(path)? };
 
         // Validate mode
         if !mode.is_null() {
@@ -402,17 +571,15 @@ pub extern "C" fn fs123_open(url: *const c_char, mode: *const c_char) -> *mut c_
             }
         }
 
-        let parsed = parse_fs123_url(url_str)?;
-        let proto = get_default_proto();
-        let client = Fs123HttpClient::new(&parsed.host, parsed.port, &proto);
+        let (client, fs_path) = resolve_path(path_str)?;
 
         // Stat to learn the file size (needed for EOF and SEEK_END).
-        let response = client.request_raw(Fs123Function::Stat, &parsed.path, None)?;
+        let response = client.request_raw(Fs123Function::Stat, &fs_path, None)?;
         if let Some(errno) = response.errno() {
             if errno != 0 {
                 return Err(Fs123Error::FilesystemError {
                     errno,
-                    message: format!("open: {}", parsed.path),
+                    message: format!("open: {}", fs_path),
                 });
             }
         }
@@ -425,7 +592,7 @@ pub extern "C" fn fs123_open(url: *const c_char, mode: *const c_char) -> *mut c_
 
         Ok(FileHandle {
             client,
-            path: parsed.path,
+            path: fs_path,
             position: 0,
             file_size,
         })
@@ -494,7 +661,11 @@ pub extern "C" fn fs123_read(file: *mut c_void, buf: *mut c_void, count: usize) 
 
     if to_copy > 0 {
         unsafe {
-            ptr::copy_nonoverlapping(content[skip..skip + to_copy].as_ptr(), buf as *mut u8, to_copy);
+            ptr::copy_nonoverlapping(
+                content[skip..skip + to_copy].as_ptr(),
+                buf as *mut u8,
+                to_copy,
+            );
         }
         handle.position += to_copy as u64;
     }
@@ -518,7 +689,7 @@ pub extern "C" fn fs123_seek(file: *mut c_void, offset: i64, whence: c_int) -> i
     let handle = unsafe { &mut *(file as *mut FileHandle) };
 
     let new_pos: i64 = match whence {
-        0 => offset, // SEEK_SET
+        0 => offset,                          // SEEK_SET
         1 => handle.position as i64 + offset, // SEEK_CUR
         2 => {
             // SEEK_END
@@ -564,7 +735,7 @@ pub extern "C" fn fs123_close(file: *mut c_void) -> c_int {
 /// characters plus NUL).  Returns the number of bytes written (excluding
 /// NUL), or -1 on error.
 #[no_mangle]
-pub extern "C" fn fs123_readlink(url: *const c_char, buf: *mut c_char, bufsiz: usize) -> isize {
+pub extern "C" fn fs123_readlink(path: *const c_char, buf: *mut c_char, bufsiz: usize) -> isize {
     clear_error();
 
     if buf.is_null() || bufsiz == 0 {
@@ -573,11 +744,9 @@ pub extern "C" fn fs123_readlink(url: *const c_char, buf: *mut c_char, bufsiz: u
     }
 
     let result = (|| -> Result<String, Fs123Error> {
-        let url_str = unsafe { cstr_to_str(url)? };
-        let parsed = parse_fs123_url(url_str)?;
-        let proto = get_default_proto();
-        let client = Fs123HttpClient::new(&parsed.host, parsed.port, &proto);
-        let response = client.request(Fs123Function::Readlink, &parsed.path, None)?;
+        let path_str = unsafe { cstr_to_str(path)? };
+        let (client, fs_path) = resolve_path(path_str)?;
+        let response = client.request(Fs123Function::Readlink, &fs_path, None)?;
         response
             .content_str()
             .ok_or_else(|| Fs123Error::InvalidResponse("Missing readlink target".to_string()))
@@ -606,12 +775,19 @@ pub extern "C" fn fs123_readlink(url: *const c_char, buf: *mut c_char, bufsiz: u
 mod tests {
     use super::*;
 
+    /// Helper: clean the global mount table between tests.
+    fn reset_mounts() {
+        lock_mount_table().clear();
+    }
+
+    // ── URL parsing ───────────────────────────────────────────────
+
     #[test]
     fn test_parse_url_basic() {
         let u = parse_fs123_url("http://example.com/some/path").unwrap();
         assert_eq!(u.host, "example.com");
         assert_eq!(u.port, 80);
-        assert_eq!(u.path, "/some/path");
+        assert_eq!(u.selector, "/some/path");
     }
 
     #[test]
@@ -619,7 +795,7 @@ mod tests {
         let u = parse_fs123_url("http://localhost:8080/dir").unwrap();
         assert_eq!(u.host, "localhost");
         assert_eq!(u.port, 8080);
-        assert_eq!(u.path, "/dir");
+        assert_eq!(u.selector, "/dir");
     }
 
     #[test]
@@ -627,14 +803,26 @@ mod tests {
         let u = parse_fs123_url("https://secure.example.com/data").unwrap();
         assert_eq!(u.host, "secure.example.com");
         assert_eq!(u.port, 443);
-        assert_eq!(u.path, "/data");
+        assert_eq!(u.selector, "/data");
     }
 
     #[test]
     fn test_parse_url_no_path() {
         let u = parse_fs123_url("http://host.example.com").unwrap();
         assert_eq!(u.host, "host.example.com");
-        assert_eq!(u.path, "/");
+        assert_eq!(u.selector, "");
+    }
+
+    #[test]
+    fn test_parse_url_root_path() {
+        let u = parse_fs123_url("http://host.example.com/").unwrap();
+        assert_eq!(u.selector, "");
+    }
+
+    #[test]
+    fn test_parse_url_trailing_slash() {
+        let u = parse_fs123_url("http://host.example.com/sel/").unwrap();
+        assert_eq!(u.selector, "/sel");
     }
 
     #[test]
@@ -646,6 +834,132 @@ mod tests {
     fn test_parse_url_empty_host() {
         assert!(parse_fs123_url("http:///path").is_err());
     }
+
+    // ── Mount table ───────────────────────────────────────────────
+
+    #[test]
+    fn test_mount_and_resolve() {
+        reset_mounts();
+
+        let url = CString::new("http://server1:8080/exports").unwrap();
+        let mp = CString::new("/mnt/data").unwrap();
+        assert_eq!(fs123_mount(url.as_ptr(), mp.as_ptr()), 0);
+
+        let (_, fs_path) = resolve_path("/mnt/data/foo/bar.txt").unwrap();
+        assert_eq!(fs_path, "/foo/bar.txt");
+
+        let (_, fs_path) = resolve_path("/mnt/data").unwrap();
+        assert_eq!(fs_path, "/");
+
+        reset_mounts();
+    }
+
+    #[test]
+    fn test_mount_longest_prefix() {
+        reset_mounts();
+
+        let url1 = CString::new("http://server1:8080").unwrap();
+        let mp1 = CString::new("/mnt").unwrap();
+        let url2 = CString::new("http://server2:8080").unwrap();
+        let mp2 = CString::new("/mnt/deep").unwrap();
+
+        fs123_mount(url1.as_ptr(), mp1.as_ptr());
+        fs123_mount(url2.as_ptr(), mp2.as_ptr());
+
+        // /mnt/deep/file → resolves to server2, path /file
+        let (client, fs_path) = resolve_path("/mnt/deep/file").unwrap();
+        assert_eq!(fs_path, "/file");
+        assert_eq!(client.port(), 8080);
+
+        // /mnt/other → resolves to server1, path /other
+        let (client, fs_path) = resolve_path("/mnt/other").unwrap();
+        assert_eq!(fs_path, "/other");
+        assert_eq!(client.port(), 8080);
+
+        reset_mounts();
+    }
+
+    #[test]
+    fn test_mount_root() {
+        reset_mounts();
+
+        let url = CString::new("http://server:80").unwrap();
+        let mp = CString::new("/").unwrap();
+        assert_eq!(fs123_mount(url.as_ptr(), mp.as_ptr()), 0);
+
+        let (_, fs_path) = resolve_path("/any/path").unwrap();
+        assert_eq!(fs_path, "/any/path");
+
+        let (_, fs_path) = resolve_path("/").unwrap();
+        assert_eq!(fs_path, "/");
+
+        reset_mounts();
+    }
+
+    #[test]
+    fn test_mount_replace() {
+        reset_mounts();
+
+        let url1 = CString::new("http://old:80").unwrap();
+        let url2 = CString::new("http://new:80").unwrap();
+        let mp = CString::new("/mnt").unwrap();
+
+        fs123_mount(url1.as_ptr(), mp.as_ptr());
+        fs123_mount(url2.as_ptr(), mp.as_ptr());
+
+        let table = lock_mount_table();
+        assert_eq!(table.len(), 1);
+        assert_eq!(table[0].client.host(), "new");
+
+        drop(table);
+        reset_mounts();
+    }
+
+    #[test]
+    fn test_umount() {
+        reset_mounts();
+
+        let url = CString::new("http://server:80").unwrap();
+        let mp = CString::new("/mnt").unwrap();
+        fs123_mount(url.as_ptr(), mp.as_ptr());
+
+        assert_eq!(fs123_umount(mp.as_ptr()), 0);
+        assert!(resolve_path("/mnt/foo").is_err());
+
+        reset_mounts();
+    }
+
+    #[test]
+    fn test_umount_not_found() {
+        reset_mounts();
+        let mp = CString::new("/nonexistent").unwrap();
+        assert_eq!(fs123_umount(mp.as_ptr()), -1);
+        assert_eq!(fs123_errno(), libc::EINVAL);
+        reset_mounts();
+    }
+
+    #[test]
+    fn test_resolve_no_mount() {
+        reset_mounts();
+        assert!(resolve_path("/nowhere/file").is_err());
+        reset_mounts();
+    }
+
+    #[test]
+    fn test_mount_no_false_prefix() {
+        reset_mounts();
+
+        let url = CString::new("http://server:80").unwrap();
+        let mp = CString::new("/mnt").unwrap();
+        fs123_mount(url.as_ptr(), mp.as_ptr());
+
+        // "/mnt2/foo" must NOT match "/mnt"
+        assert!(resolve_path("/mnt2/foo").is_err());
+
+        reset_mounts();
+    }
+
+    // ── Error handling ────────────────────────────────────────────
 
     #[test]
     fn test_thread_local_error() {
@@ -661,8 +975,10 @@ mod tests {
         assert_eq!(fs123_errno(), 0);
     }
 
+    // ── API null-safety ───────────────────────────────────────────
+
     #[test]
-    fn test_stat_null_url() {
+    fn test_stat_null_path() {
         let mut buf = unsafe { std::mem::zeroed::<fs123_stat_t>() };
         assert_eq!(fs123_stat(ptr::null(), &mut buf), -1);
         assert_eq!(fs123_errno(), libc::EINVAL);
@@ -670,26 +986,40 @@ mod tests {
 
     #[test]
     fn test_stat_null_buf() {
-        let url = CString::new("http://localhost/test").unwrap();
-        assert_eq!(fs123_stat(url.as_ptr(), ptr::null_mut()), -1);
+        reset_mounts();
+        let url = CString::new("http://x:80").unwrap();
+        let mp = CString::new("/t").unwrap();
+        fs123_mount(url.as_ptr(), mp.as_ptr());
+
+        let p = CString::new("/t/file").unwrap();
+        assert_eq!(fs123_stat(p.as_ptr(), ptr::null_mut()), -1);
         assert_eq!(fs123_errno(), libc::EINVAL);
+        reset_mounts();
+    }
+
+    #[test]
+    fn test_stat_no_mount() {
+        reset_mounts();
+        let p = CString::new("/nowhere").unwrap();
+        let mut buf = unsafe { std::mem::zeroed::<fs123_stat_t>() };
+        assert_eq!(fs123_stat(p.as_ptr(), &mut buf), -1);
+        assert_eq!(fs123_errno(), libc::EINVAL);
+        reset_mounts();
     }
 
     #[test]
     fn test_open_bad_mode() {
-        let url = CString::new("http://localhost/test").unwrap();
+        reset_mounts();
+        let url = CString::new("http://x:80").unwrap();
+        let mp = CString::new("/t").unwrap();
+        fs123_mount(url.as_ptr(), mp.as_ptr());
+
+        let p = CString::new("/t/file").unwrap();
         let mode = CString::new("w").unwrap();
-        let fh = fs123_open(url.as_ptr(), mode.as_ptr());
+        let fh = fs123_open(p.as_ptr(), mode.as_ptr());
         assert!(fh.is_null());
         assert_eq!(fs123_errno(), libc::EINVAL);
-    }
-
-    #[test]
-    fn test_opendir_bad_url() {
-        let url = CString::new("ftp://nope").unwrap();
-        let dh = fs123_opendir(url.as_ptr());
-        assert!(dh.is_null());
-        assert_eq!(fs123_errno(), libc::EINVAL);
+        reset_mounts();
     }
 
     #[test]
@@ -700,7 +1030,6 @@ mod tests {
 
     #[test]
     fn test_close_null() {
-        // Should not crash
         assert_eq!(fs123_close(ptr::null_mut()), 0);
         fs123_closedir(ptr::null_mut());
     }
@@ -712,7 +1041,21 @@ mod tests {
 
     #[test]
     fn test_readlink_null_buf() {
-        let url = CString::new("http://localhost/link").unwrap();
-        assert_eq!(fs123_readlink(url.as_ptr(), ptr::null_mut(), 256), -1);
+        reset_mounts();
+        let url = CString::new("http://x:80").unwrap();
+        let mp = CString::new("/t").unwrap();
+        fs123_mount(url.as_ptr(), mp.as_ptr());
+
+        let p = CString::new("/t/link").unwrap();
+        assert_eq!(fs123_readlink(p.as_ptr(), ptr::null_mut(), 256), -1);
+        reset_mounts();
+    }
+
+    #[test]
+    fn test_mount_relative_path_rejected() {
+        let url = CString::new("http://x:80").unwrap();
+        let mp = CString::new("relative").unwrap();
+        assert_eq!(fs123_mount(url.as_ptr(), mp.as_ptr()), -1);
+        assert_eq!(fs123_errno(), libc::EINVAL);
     }
 }

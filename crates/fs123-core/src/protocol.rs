@@ -428,12 +428,22 @@ pub struct Fs123HttpClient {
     host: String,
     port: u16,
     proto: String,
+    selector: String,
     agent: ureq::Agent,
 }
 
 impl Fs123HttpClient {
     /// Create a new HTTP client.
     pub fn new(host: &str, port: u16, proto: &str) -> Self {
+        Self::new_with_selector(host, port, proto, "")
+    }
+
+    /// Create a new HTTP client with a URL path prefix (selector).
+    ///
+    /// The selector is prepended before `/fs123/...` in every request URL.
+    /// For example, selector `"/myfs"` produces URLs like
+    /// `http://host:port/myfs/fs123/7/3/a/path`.
+    pub fn new_with_selector(host: &str, port: u16, proto: &str, selector: &str) -> Self {
         let agent = ureq::AgentBuilder::new()
             .timeout_connect(std::time::Duration::from_secs(30))
             .timeout_read(std::time::Duration::from_secs(60))
@@ -443,6 +453,7 @@ impl Fs123HttpClient {
             host: host.to_string(),
             port,
             proto: proto.to_string(),
+            selector: selector.trim_end_matches('/').to_string(),
             agent,
         }
     }
@@ -526,7 +537,7 @@ impl Fs123HttpClient {
         query_params: Option<&[&str]>,
     ) -> Result<Fs123Response> {
         let url_path = build_url(&self.proto, function, path, query_params);
-        let full_url = format!("http://{}:{}{}", self.host, self.port, url_path);
+        let full_url = format!("http://{}:{}{}{}", self.host, self.port, self.selector, url_path);
 
         let http_response = self.agent.get(&full_url).call().map_err(|e| match e {
             ureq::Error::Status(status, response) => {
@@ -563,7 +574,7 @@ impl Fs123HttpClient {
         query_params: Option<&[&str]>,
     ) -> Result<Fs123Response> {
         let url_path = build_url(&self.proto, function, path, query_params);
-        let full_url = format!("http://{}:{}{}", self.host, self.port, url_path);
+        let full_url = format!("http://{}:{}{}{}", self.host, self.port, self.selector, url_path);
 
         let http_response = self.agent.get(&full_url).call().map_err(|e| match e {
             ureq::Error::Status(status, response) => {

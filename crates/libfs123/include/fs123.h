@@ -4,11 +4,24 @@
  * Link with -lfs123 (shared: libfs123.so / libfs123.dylib,
  *                     static: libfs123.a).
  *
- * All functions that accept a URL expect the form:
+ * Usage:
  *
- *     http://host[:port]/path
+ *   // Mount one or more fs123 servers into a virtual namespace.
+ *   fs123_mount("http://server1:8080/exports/data", "/mnt/data");
+ *   fs123_mount("http://server2:8080",              "/mnt/logs");
  *
- * where /path is the filesystem path on the fs123 server.
+ *   // Use local-looking paths with every other call.
+ *   fs123_stat_t sb;
+ *   fs123_stat("/mnt/data/file.txt", &sb);
+ *
+ *   void *fh = fs123_open("/mnt/logs/app.log", "r");
+ *   char buf[4096];
+ *   ssize_t n = fs123_read(fh, buf, sizeof(buf));
+ *   fs123_close(fh);
+ *
+ *   // Unmount when done.
+ *   fs123_umount("/mnt/data");
+ *   fs123_umount("/mnt/logs");
  */
 
 #ifndef FS123_H
@@ -78,17 +91,38 @@ const char *fs123_strerror(void);
 /*
  * fs123_set_proto — set the default fs123 protocol version.
  * Example: fs123_set_proto("7.3") or fs123_set_proto("8.0").
- * Defaults to "7.3" if never called.  Thread-local.
+ * Affects subsequent fs123_mount() calls.  Thread-local.
+ * Defaults to "7.3" if never called.
  */
 void fs123_set_proto(const char *proto);
+
+/* ── Mount / Unmount ───────────────────────────────────────────── */
+
+/*
+ * fs123_mount — mount an fs123 server at a local path prefix.
+ *
+ * url:        server address, e.g. "http://server:8080/exports/data".
+ *             The path component (if any) is used as a selector prefix.
+ * mountpoint: absolute path prefix, e.g. "/mnt/data".
+ *
+ * Returns 0 on success, -1 on error.
+ * Replaces any existing mount at the same mountpoint.
+ */
+int fs123_mount(const char *url, const char *mountpoint);
+
+/*
+ * fs123_umount — unmount a previously mounted path.
+ * Returns 0 on success, -1 if the mountpoint is not found.
+ */
+int fs123_umount(const char *mountpoint);
 
 /* ── Stat ──────────────────────────────────────────────────────── */
 
 /*
- * fs123_stat — get file attributes.
+ * fs123_stat — get file attributes for a path in the mount namespace.
  * Returns 0 on success, -1 on error.
  */
-int fs123_stat(const char *url, fs123_stat_t *buf);
+int fs123_stat(const char *path, fs123_stat_t *buf);
 
 /* ── Directory operations ──────────────────────────────────────── */
 
@@ -97,7 +131,7 @@ int fs123_stat(const char *url, fs123_stat_t *buf);
  * Returns an opaque handle, or NULL on error.
  * The full listing is fetched eagerly.
  */
-void *fs123_opendir(const char *url);
+void *fs123_opendir(const char *path);
 
 /*
  * fs123_readdir — read the next directory entry.
@@ -117,7 +151,7 @@ void fs123_closedir(void *dir);
  * mode must start with 'r' (e.g. "r", "rb"); write modes are rejected.
  * Returns an opaque handle, or NULL on error.
  */
-void *fs123_open(const char *url, const char *mode);
+void *fs123_open(const char *path, const char *mode);
 
 /*
  * fs123_read — read bytes from an open file.
@@ -145,7 +179,7 @@ int fs123_close(void *file);
  * Writes a null-terminated string to buf (at most bufsiz-1 chars + NUL).
  * Returns bytes written (excl. NUL), or -1 on error.
  */
-ssize_t fs123_readlink(const char *url, char *buf, size_t bufsiz);
+ssize_t fs123_readlink(const char *path, char *buf, size_t bufsiz);
 
 #ifdef __cplusplus
 }
