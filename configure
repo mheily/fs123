@@ -1,5 +1,7 @@
 #!/bin/bash
 
+git fetch origin master
+
 if ! [ -d legacy ] ; then
 	mkdir legacy
 	git archive master | tar -C legacy/ -xf -
