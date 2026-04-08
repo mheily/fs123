@@ -1,0 +1,13 @@
+[package]
+name = "libfs123"
+version = "0.1.0"
+edition = "2021"
+description = "C-compatible library providing POSIX-like filesystem access over fs123 protocol"
+
+[lib]
+name = "fs123"
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+fs123-core = { path = "../fs123-core" }
+libc = "0.2"
