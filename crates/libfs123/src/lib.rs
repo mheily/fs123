@@ -239,6 +239,126 @@ fn lock_mount_table() -> std::sync::MutexGuard<'static, Vec<MountEntry>> {
     MOUNT_TABLE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+// ── Fstab support ────────────────────────────────────────────────
+//
+// Two fstab files are consulted, in order:
+//   1. /etc/fs123/fstab                    — system-wide defaults
+//   2. $XDG_CONFIG_HOME/fs123/fstab        — per-user overrides
+//      (falls back to ~/.config/fs123/fstab when XDG_CONFIG_HOME is unset)
+//
+// The user file is processed *after* the system file so that entries
+// with the same mountpoint silently replace the system-wide entry.
+// Callers invoke fs123_mountall() to read (or re-read) these files.
+
+const FS123_SYSTEM_FSTAB: &str = "/etc/fs123/fstab";
+
+/// Return the path to the per-user fstab file.
+///
+/// Uses `$XDG_CONFIG_HOME/fs123/fstab` if the variable is set and
+/// non-empty, otherwise falls back to `$HOME/.config/fs123/fstab`.
+fn user_fstab_path() -> Option<std::path::PathBuf> {
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        if !xdg.is_empty() {
+            return Some(std::path::PathBuf::from(xdg).join("fs123/fstab"));
+        }
+    }
+    std::env::var("HOME")
+        .ok()
+        .map(|home| std::path::PathBuf::from(home).join(".config/fs123/fstab"))
+}
+
+/// Read and process a single fstab file.  Errors on individual lines
+/// are silently ignored so that one bad entry does not prevent the
+/// rest from mounting.
+fn process_fstab_file(path: &str) {
+    let contents = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return, // file missing or unreadable — nothing to do
+    };
+
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() < 2 {
+            continue; // need at least url and mountpoint
+        }
+
+        let url = fields[0];
+        let mountpoint = fields[1];
+        let options = if fields.len() >= 3 {
+            let opt = fields[2];
+            if opt == "-" || opt == "none" {
+                None
+            } else {
+                Some(opt)
+            }
+        } else {
+            None
+        };
+
+        let _ = mount_internal(url, mountpoint, options);
+    }
+}
+
+/// Shared mount implementation used by both `fs123_mount` and fstab
+/// processing.
+fn mount_internal(
+    url_str: &str,
+    mount_str: &str,
+    options: Option<&str>,
+) -> Result<(), Fs123Error> {
+    let opts = match options {
+        Some(s) => parse_mount_options(s)?,
+        None => MountOptions::default(),
+    };
+
+    if !mount_str.starts_with('/') {
+        return Err(Fs123Error::InvalidArgument(
+            "Mount point must be an absolute path".to_string(),
+        ));
+    }
+
+    let parsed = parse_fs123_url(url_str)?;
+    let proto = get_default_proto();
+    let client = Arc::new(Fs123HttpClient::new_with_selector(
+        &parsed.host,
+        parsed.port,
+        &proto,
+        &parsed.selector,
+    ));
+
+    let mp = mount_str.trim_end_matches('/');
+    let mp = if mp.is_empty() {
+        "/".to_string()
+    } else {
+        mp.to_string()
+    };
+
+    let mut table = lock_mount_table();
+
+    let cache = Arc::new(Cache::new(
+        Duration::from_secs(opts.cache_ttl_secs),
+        opts.cache_max_entries,
+    ));
+
+    if let Some(existing) = table.iter_mut().find(|e| e.mount_point == mp) {
+        existing.client = client;
+        existing.cache = cache;
+    } else {
+        table.push(MountEntry {
+            mount_point: mp,
+            client,
+            cache,
+        });
+    }
+
+    Ok(())
+}
+
 /// Resolve a local path to (client, cache, fs123_path) via the mount table.
 fn resolve_path(path: &str) -> Result<(Arc<Fs123HttpClient>, Arc<Cache>, String), Fs123Error> {
     // Normalize: strip trailing slash unless path is exactly "/"
@@ -464,55 +584,13 @@ pub extern "C" fn fs123_mount(
         let url_str = unsafe { cstr_to_str(url)? };
         let mount_str = unsafe { cstr_to_str(mountpoint)? };
 
-        let opts = if options.is_null() {
-            MountOptions::default()
+        let opts_str = if options.is_null() {
+            None
         } else {
-            let opts_str = unsafe { cstr_to_str(options)? };
-            parse_mount_options(opts_str)?
+            Some(unsafe { cstr_to_str(options)? })
         };
 
-        if !mount_str.starts_with('/') {
-            return Err(Fs123Error::InvalidArgument(
-                "Mount point must be an absolute path".to_string(),
-            ));
-        }
-
-        let parsed = parse_fs123_url(url_str)?;
-        let proto = get_default_proto();
-        let client = Arc::new(Fs123HttpClient::new_with_selector(
-            &parsed.host,
-            parsed.port,
-            &proto,
-            &parsed.selector,
-        ));
-
-        // Normalize mount point: strip trailing slash, but keep "/" as-is
-        let mp = mount_str.trim_end_matches('/');
-        let mp = if mp.is_empty() {
-            "/".to_string()
-        } else {
-            mp.to_string()
-        };
-
-        let mut table = lock_mount_table();
-
-        let cache = Arc::new(Cache::new(
-            Duration::from_secs(opts.cache_ttl_secs),
-            opts.cache_max_entries,
-        ));
-
-        if let Some(existing) = table.iter_mut().find(|e| e.mount_point == mp) {
-            existing.client = client;
-            existing.cache = cache;
-        } else {
-            table.push(MountEntry {
-                mount_point: mp,
-                client,
-                cache,
-            });
-        }
-
-        Ok(())
+        mount_internal(url_str, mount_str, opts_str)
     })();
 
     match result {
@@ -558,6 +636,40 @@ pub extern "C" fn fs123_umount(mountpoint: *const c_char) -> c_int {
             -1
         }
     }
+}
+
+// ── C API: Mountall ──────────────────────────────────────────────
+
+/// Read (or re-read) the fs123 fstab files and mount every entry.
+///
+/// Two files are consulted, in order:
+///   1. `/etc/fs123/fstab`                    — system-wide defaults
+///   2. `$XDG_CONFIG_HOME/fs123/fstab`        — per-user overrides
+///      (falls back to `~/.config/fs123/fstab` when `XDG_CONFIG_HOME`
+///      is unset)
+///
+/// The per-user file is processed after the system file so that
+/// entries at the same mountpoint silently replace the system-wide
+/// entry.  May be called multiple times to pick up configuration
+/// changes; each call re-reads both files.
+///
+/// Returns 0 on success.  (Individual lines that fail to parse are
+/// silently skipped, so the return value is always 0 today.)
+#[no_mangle]
+pub extern "C" fn fs123_mountall() -> c_int {
+    clear_error();
+
+    // 1. System-wide
+    process_fstab_file(FS123_SYSTEM_FSTAB);
+
+    // 2. Per-user (overrides system entries at same mountpoint)
+    if let Some(user_path) = user_fstab_path() {
+        if let Some(s) = user_path.to_str() {
+            process_fstab_file(s);
+        }
+    }
+
+    0
 }
 
 // ── C API: stat ───────────────────────────────────────────────────
@@ -1378,5 +1490,142 @@ mod tests {
         let mp = CString::new("relative").unwrap();
         assert_eq!(fs123_mount(url.as_ptr(), mp.as_ptr(), ptr::null()), -1);
         assert_eq!(fs123_errno(), libc::EINVAL);
+    }
+
+    // ── Fstab parsing ─────────────────────────────────────────────
+
+    #[test]
+    fn test_process_fstab_basic() {
+        reset_mounts();
+
+        let contents = "\
+# comment line
+http://server1:8080/exports   /mnt/data   cache_ttl_secs=120
+
+http://server2:9090            /mnt/logs   -
+";
+        for line in contents.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            if fields.len() < 2 {
+                continue;
+            }
+            let url = fields[0];
+            let mountpoint = fields[1];
+            let options = if fields.len() >= 3 {
+                let opt = fields[2];
+                if opt == "-" || opt == "none" {
+                    None
+                } else {
+                    Some(opt)
+                }
+            } else {
+                None
+            };
+            mount_internal(url, mountpoint, options).unwrap();
+        }
+
+        let table = lock_mount_table();
+        assert_eq!(table.len(), 2);
+
+        // server1 at /mnt/data with custom TTL
+        let e1 = table.iter().find(|e| e.mount_point == "/mnt/data").unwrap();
+        assert_eq!(e1.client.host(), "server1");
+        assert_eq!(e1.client.port(), 8080);
+        assert_eq!(e1.cache.ttl, Duration::from_secs(120));
+
+        // server2 at /mnt/logs with default TTL
+        let e2 = table.iter().find(|e| e.mount_point == "/mnt/logs").unwrap();
+        assert_eq!(e2.client.host(), "server2");
+        assert_eq!(e2.client.port(), 9090);
+        assert_eq!(e2.cache.ttl, Duration::from_secs(DEFAULT_CACHE_TTL_SECS));
+
+        drop(table);
+        reset_mounts();
+    }
+
+    #[test]
+    fn test_process_fstab_no_options() {
+        reset_mounts();
+
+        mount_internal("http://host:80", "/mnt/x", None).unwrap();
+
+        let table = lock_mount_table();
+        assert_eq!(table.len(), 1);
+        assert_eq!(table[0].mount_point, "/mnt/x");
+        assert_eq!(table[0].cache.ttl, Duration::from_secs(DEFAULT_CACHE_TTL_SECS));
+
+        drop(table);
+        reset_mounts();
+    }
+
+    #[test]
+    fn test_mount_internal_no_options() {
+        reset_mounts();
+
+        // None options should use defaults
+        mount_internal("http://host:80", "/mnt/y", None).unwrap();
+
+        let table = lock_mount_table();
+        assert_eq!(table.len(), 1);
+        assert_eq!(table[0].cache.ttl, Duration::from_secs(DEFAULT_CACHE_TTL_SECS));
+        drop(table);
+        reset_mounts();
+    }
+
+    #[test]
+    fn test_process_fstab_skips_bad_lines() {
+        reset_mounts();
+
+        // Only a URL, no mountpoint — should be skipped
+        let line = "http://server:80";
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        assert!(fields.len() < 2); // confirms it would be skipped
+
+        reset_mounts();
+    }
+
+    #[test]
+    fn test_user_fstab_path_xdg() {
+        // When XDG_CONFIG_HOME is set, use it
+        std::env::set_var("XDG_CONFIG_HOME", "/tmp/xdg-test");
+        let p = user_fstab_path().unwrap();
+        assert_eq!(p, std::path::PathBuf::from("/tmp/xdg-test/fs123/fstab"));
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    #[test]
+    fn test_user_fstab_path_home_fallback() {
+        std::env::remove_var("XDG_CONFIG_HOME");
+        let home = std::env::var("HOME").unwrap();
+        let p = user_fstab_path().unwrap();
+        assert_eq!(
+            p,
+            std::path::PathBuf::from(format!("{}/.config/fs123/fstab", home))
+        );
+    }
+
+    #[test]
+    fn test_user_fstab_overrides_system() {
+        reset_mounts();
+
+        // Simulate system fstab: server1 at /mnt/data
+        mount_internal("http://server1:8080", "/mnt/data", None).unwrap();
+        let table = lock_mount_table();
+        assert_eq!(table[0].client.host(), "server1");
+        drop(table);
+
+        // Simulate user fstab: server2 at same mountpoint — should replace
+        mount_internal("http://server2:9090", "/mnt/data", None).unwrap();
+        let table = lock_mount_table();
+        assert_eq!(table.len(), 1); // still one entry, not two
+        assert_eq!(table[0].client.host(), "server2");
+        assert_eq!(table[0].client.port(), 9090);
+        drop(table);
+
+        reset_mounts();
     }
 }

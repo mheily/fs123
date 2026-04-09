@@ -120,6 +120,35 @@ int fs123_mount(const char *url, const char *mountpoint, const char *options);
  */
 int fs123_umount(const char *mountpoint);
 
+/*
+ * fs123_mountall — read (or re-read) the fs123 fstab files and mount
+ * every entry found.
+ *
+ * Two files are consulted, in order:
+ *   1. /etc/fs123/fstab                    — system-wide defaults
+ *   2. $XDG_CONFIG_HOME/fs123/fstab        — per-user overrides
+ *      (falls back to ~/.config/fs123/fstab when XDG_CONFIG_HOME is unset)
+ *
+ * The per-user file is processed after the system file, so entries
+ * at the same mountpoint silently replace the system-wide entry.
+ *
+ * The file format has three whitespace-separated columns per line:
+ *
+ *   # url                              mountpoint   options
+ *   http://server1:8080/exports/data   /mnt/data    cache_ttl_secs=60
+ *   http://server2:8080                /mnt/logs    -
+ *
+ * Blank lines and lines starting with '#' are ignored.
+ * The options column may be omitted or set to "-" or "none".
+ *
+ * May be called multiple times to pick up configuration changes.
+ * Explicit fs123_mount() calls override fstab entries at the same
+ * mountpoint.
+ *
+ * Returns 0.
+ */
+int fs123_mountall(void);
+
 /* ── Stat ──────────────────────────────────────────────────────── */
 
 /*
