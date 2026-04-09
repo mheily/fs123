@@ -38,14 +38,14 @@ class Path(pathlib.PurePosixPath):
     def is_file(self):
         try:
             st = self.stat()
-            return (st.st_mode & 0o170000) == 0o100000
+            return (st.st_mode & _S_IFMT) == 0o100000
         except OSError:
             return False
 
     def is_dir(self):
         try:
             st = self.stat()
-            return (st.st_mode & 0o170000) == 0o040000
+            return (st.st_mode & _S_IFMT) == 0o040000
         except OSError:
             return False
 
@@ -104,8 +104,7 @@ class Path(pathlib.PurePosixPath):
         return Fs123File(str(self), mode)
 
     def fsync(self):
-        from ._ffi import _check as _chk
-        _chk(_lib.fs123_fsync(str(self).encode("utf-8")), "fsync")
+        _check(_lib.fs123_fsync(str(self).encode("utf-8")), "fsync")
 
     def __repr__(self):
         return f"fs123.Path('{self}')"
@@ -116,10 +115,10 @@ class Fs123File:
         self._path = path
         self._mode = mode
         self._binary = "b" in mode
-        c_mode = b"rb" if self._binary else b"r"
-        self._handle = _lib.fs123_open(path.encode("utf-8"), c_mode)
+        self._handle = _lib.fs123_open(path.encode("utf-8"), b"rb")
         _check(0 if self._handle else -1, "open")
         self._closed = False
+        self._line_buf = b""
 
     @property
     def closed(self):
@@ -147,6 +146,9 @@ class Fs123File:
             raise ValueError("I/O operation on closed file")
         if size < 0:
             chunks = []
+            if self._line_buf:
+                chunks.append(self._line_buf)
+                self._line_buf = b""
             while True:
                 buf = ctypes.create_string_buffer(_BUF_SIZE)
                 n = _lib.fs123_read(self._handle, buf, _BUF_SIZE)
@@ -157,11 +159,20 @@ class Fs123File:
                 chunks.append(buf.raw[:n])
             data = b"".join(chunks)
         else:
-            buf = ctypes.create_string_buffer(size)
-            n = _lib.fs123_read(self._handle, buf, size)
-            if n < 0:
-                _check(-1, "read")
-            data = buf.raw[:n]
+            parts = []
+            remaining = size
+            if self._line_buf:
+                take = min(len(self._line_buf), remaining)
+                parts.append(self._line_buf[:take])
+                self._line_buf = self._line_buf[take:]
+                remaining -= take
+            if remaining > 0:
+                buf = ctypes.create_string_buffer(remaining)
+                n = _lib.fs123_read(self._handle, buf, remaining)
+                if n < 0:
+                    _check(-1, "read")
+                parts.append(buf.raw[:n])
+            data = b"".join(parts)
         if self._binary:
             return data
         return data.decode("utf-8")
@@ -169,21 +180,23 @@ class Fs123File:
     def readline(self):
         if self._binary:
             raise OSError("readline not available in binary mode")
-        line = b""
         while True:
-            buf = ctypes.create_string_buffer(1)
-            n = _lib.fs123_read(self._handle, buf, 1)
+            nl = self._line_buf.find(b"\n")
+            if nl >= 0:
+                line = self._line_buf[:nl + 1]
+                self._line_buf = self._line_buf[nl + 1:]
+                return line.decode("utf-8")
+            buf = ctypes.create_string_buffer(_BUF_SIZE)
+            n = _lib.fs123_read(self._handle, buf, _BUF_SIZE)
             if n < 0:
                 _check(-1, "read")
             if n == 0:
-                break
-            byte = buf.raw[:1]
-            line += byte
-            if byte == b"\n":
-                break
-        if not line:
-            return ""
-        return line.decode("utf-8")
+                if self._line_buf:
+                    line = self._line_buf
+                    self._line_buf = b""
+                    return line.decode("utf-8")
+                return ""
+            self._line_buf += buf.raw[:n]
 
     def readlines(self):
         return list(self)
@@ -191,6 +204,7 @@ class Fs123File:
     def seek(self, offset, whence=0):
         if self._closed:
             raise ValueError("I/O operation on closed file")
+        self._line_buf = b""
         rc = _lib.fs123_seek(self._handle, ctypes.c_int64(offset), ctypes.c_int(whence))
         _check(rc, "seek")
         return rc

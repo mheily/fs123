@@ -1,3 +1,5 @@
+import os
+
 from ._ffi import Fs123Stat, _check, _lib
 from ._path import Fs123File, Path
 
@@ -33,8 +35,6 @@ def strerror():
     msg = _lib.fs123_strerror()
     return msg.decode("utf-8", errors="replace") if msg else None
 
-
-import os as os  # noqa: E402
 
 __all__ = [
     "Path",

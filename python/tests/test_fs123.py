@@ -142,8 +142,8 @@ class TestModuleFunctions:
 
     def test_mount_failure_raises_oserror(self):
         with pytest.raises(OSError):
-            from fs123 import umount
-            umount("/tmp/nope_fs123_test_not_mounted_either")
+            from fs123 import mount
+            mount("http://localhost:99999/nonexistent", "/tmp/nope_fs123_test_not_mounted_either")
 
     def test_umount_failure_raises_oserror(self):
         with pytest.raises(OSError):
