@@ -5,3 +5,12 @@ Cargo.lock
 crates/*/target/
 target/
 legacy/
+
+# Build artifacts copied to Python package
+python/fs123/*.so
+python/fs123/*.dylib
+
+# Python artifacts
+__pycache__/
+*.egg-info/
+.venv/
