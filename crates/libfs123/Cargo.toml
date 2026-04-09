@@ -11,3 +11,6 @@ crate-type = ["cdylib", "staticlib"]
 [dependencies]
 fs123-core = { path = "../fs123-core" }
 libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"

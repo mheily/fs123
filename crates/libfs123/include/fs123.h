@@ -108,6 +108,7 @@ void fs123_set_proto(const char *proto);
  *             Recognized keys:
  *               cache_ttl_secs=N      entry lifetime in seconds (default 30)
  *               cache_max_entries=N   max entries per cache map (default 10000)
+ *               mirror=true|false     download files to local disk (default false)
  *
  * Returns 0 on success, -1 on error.
  * Replaces any existing mount at the same mountpoint.
@@ -148,6 +149,22 @@ int fs123_umount(const char *mountpoint);
  * Returns 0.
  */
 int fs123_mountall(void);
+
+/* ── Per-file sync ────────────────────────────────────────────── */
+
+/*
+ * fs123_fsync — download a single remote file to local disk.
+ *
+ * Works regardless of whether mirror=true is set on the mount.
+ * The file is stored at the local path under the mount point
+ * (e.g. /mnt/data/file.txt).  Parent directories are created as
+ * needed using the current umask.
+ *
+ * If the file already exists locally it is not re-downloaded.
+ *
+ * Returns 0 on success, -1 on error.
+ */
+int fs123_fsync(const char *path);
 
 /* ── Stat ──────────────────────────────────────────────────────── */
 

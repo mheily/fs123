@@ -37,6 +37,8 @@ use fs123_core::{
     Fs123Error, Fs123Function, Fs123HttpClient,
 };
 
+use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
+
 // ── In-process cache ──────────────────────────────────────────────
 //
 // Simple per-mount TTL cache for stat results, directory listings,
@@ -146,6 +148,7 @@ impl Cache {
 struct MountOptions {
     cache_ttl_secs: u64,
     cache_max_entries: usize,
+    mirror: bool,
 }
 
 impl Default for MountOptions {
@@ -153,6 +156,7 @@ impl Default for MountOptions {
         MountOptions {
             cache_ttl_secs: DEFAULT_CACHE_TTL_SECS,
             cache_max_entries: DEFAULT_CACHE_MAX_ENTRIES,
+            mirror: false,
         }
     }
 }
@@ -162,6 +166,7 @@ impl Default for MountOptions {
 /// Recognized keys:
 ///   - `cache_ttl_secs`     — cache entry lifetime in seconds (default 30)
 ///   - `cache_max_entries`   — max entries per cache map (default 10000)
+///   - `mirror`             — download files to local disk (default false)
 ///
 /// Unknown keys are silently ignored so callers can pass through
 /// application-specific options without breaking.
@@ -186,6 +191,9 @@ fn parse_mount_options(opts: &str) -> Result<MountOptions, Fs123Error> {
                 mo.cache_max_entries = value.trim().parse().map_err(|_| {
                     Fs123Error::InvalidArgument(format!("Invalid cache_max_entries: {}", value))
                 })?;
+            }
+            "mirror" => {
+                mo.mirror = matches!(value.trim(), "true" | "1" | "yes");
             }
             _ => {} // ignore unknown keys
         }
@@ -230,6 +238,7 @@ struct MountEntry {
     mount_point: String,
     client: Arc<Fs123HttpClient>,
     cache: Arc<Cache>,
+    mirror: bool,
 }
 
 static MOUNT_TABLE: Mutex<Vec<MountEntry>> = Mutex::new(Vec::new());
@@ -348,19 +357,30 @@ fn mount_internal(
     if let Some(existing) = table.iter_mut().find(|e| e.mount_point == mp) {
         existing.client = client;
         existing.cache = cache;
+        existing.mirror = opts.mirror;
     } else {
         table.push(MountEntry {
             mount_point: mp,
             client,
             cache,
+            mirror: opts.mirror,
         });
     }
 
     Ok(())
 }
 
-/// Resolve a local path to (client, cache, fs123_path) via the mount table.
-fn resolve_path(path: &str) -> Result<(Arc<Fs123HttpClient>, Arc<Cache>, String), Fs123Error> {
+/// Result of resolving a local path through the mount table.
+struct ResolvedPath {
+    client: Arc<Fs123HttpClient>,
+    cache: Arc<Cache>,
+    fs_path: String,
+    mount_point: String,
+    mirror: bool,
+}
+
+/// Resolve a local path via the mount table (longest-prefix match).
+fn resolve_path(path: &str) -> Result<ResolvedPath, Fs123Error> {
     // Normalize: strip trailing slash unless path is exactly "/"
     let path = if path.len() > 1 && path.ends_with('/') {
         &path[..path.len() - 1]
@@ -398,7 +418,13 @@ fn resolve_path(path: &str) -> Result<(Arc<Fs123HttpClient>, Arc<Cache>, String)
         path[mount.mount_point.len()..].to_string()
     };
 
-    Ok((Arc::clone(&mount.client), Arc::clone(&mount.cache), fs_path))
+    Ok(ResolvedPath {
+        client: Arc::clone(&mount.client),
+        cache: Arc::clone(&mount.cache),
+        fs_path,
+        mount_point: mount.mount_point.clone(),
+        mirror: mount.mirror,
+    })
 }
 
 // ── URL parsing (used by fs123_mount) ─────────────────────────────
@@ -506,16 +532,144 @@ pub struct fs123_dirent_t {
 
 // ── Internal handle types ─────────────────────────────────────────
 
-struct FileHandle {
-    client: Arc<Fs123HttpClient>,
-    path: String,
-    position: u64,
-    file_size: i64,
+enum FileHandle {
+    Remote {
+        client: Arc<Fs123HttpClient>,
+        path: String,
+        position: u64,
+        file_size: i64,
+    },
+    Local {
+        file: std::fs::File,
+    },
 }
 
 struct DirHandle {
     entries: Vec<DirEntryData>,
     index: usize,
+}
+
+// ── Mirror helpers ───────────────────────────────────────────────
+
+/// Stat a local file and convert the result to `Fs123StatResult`.
+fn stat_local_file(path: &str) -> Result<Fs123StatResult, Fs123Error> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = std::fs::metadata(path)?;
+    Ok(Fs123StatResult {
+        st_mode: metadata.mode(),
+        st_nlink: metadata.nlink(),
+        st_uid: metadata.uid(),
+        st_gid: metadata.gid(),
+        st_size: metadata.size() as i64,
+        st_mtime: metadata.mtime(),
+        st_ctime: metadata.ctime(),
+        st_atime: metadata.atime(),
+        st_ino: metadata.ino(),
+        st_mtime_nsec: metadata.mtime_nsec(),
+        st_ctime_nsec: metadata.ctime_nsec(),
+        st_atime_nsec: metadata.atime_nsec(),
+        st_dev: metadata.dev(),
+        st_blocks: metadata.blocks() as i64,
+        st_blksize: metadata.blksize() as i64,
+        st_rdev: metadata.rdev(),
+    })
+}
+
+/// Download a remote file to local disk.
+///
+/// Downloads in 128 KiB chunks to a temporary file, then atomically
+/// renames it to the final path.  Creates parent directories as needed.
+fn download_file(
+    client: &Fs123HttpClient,
+    fs_path: &str,
+    local_path: &str,
+    file_size: i64,
+) -> Result<(), Fs123Error> {
+    let local = std::path::Path::new(local_path);
+
+    if let Some(parent) = local.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let tmp_path = format!("{}.fs123dl", local_path);
+    let mut tmp_file = std::fs::File::create(&tmp_path)?;
+
+    if file_size > 0 {
+        let total_bytes = file_size as u64;
+        let chunk_kib: i64 = 128;
+        let total_kib = ((file_size as i64) + 1023) / 1024;
+        let mut offset_kib: i64 = 0;
+
+        while offset_kib < total_kib {
+            let len_kib = chunk_kib.min(total_kib - offset_kib);
+            let params = [len_kib.to_string(), offset_kib.to_string()];
+            let params_ref: Vec<&str> = params.iter().map(|s| s.as_str()).collect();
+
+            let response = match client.request(Fs123Function::Read, fs_path, Some(&params_ref))
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    let _ = std::fs::remove_file(&tmp_path);
+                    return Err(e);
+                }
+            };
+
+            let content = response.content().unwrap_or(&[]);
+            if let Err(e) = tmp_file.write_all(content) {
+                let _ = std::fs::remove_file(&tmp_path);
+                return Err(e.into());
+            }
+
+            offset_kib += len_kib;
+        }
+
+        // The last chunk may contain trailing bytes; truncate to exact size.
+        if let Err(e) = tmp_file.set_len(total_bytes) {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(e.into());
+        }
+    }
+
+    drop(tmp_file);
+
+    if let Err(e) = std::fs::rename(&tmp_path, local_path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e.into());
+    }
+
+    Ok(())
+}
+
+/// Stat a remote file and return its size, using the cache if available.
+fn remote_file_size(
+    client: &Fs123HttpClient,
+    cache: &Cache,
+    fs_path: &str,
+) -> Result<i64, Fs123Error> {
+    if let Some(cached) = cache.get_stat(fs_path) {
+        return Ok(cached.st_size);
+    }
+
+    let response = client.request_raw(Fs123Function::Stat, fs_path, None)?;
+    if let Some(errno) = response.errno() {
+        if errno != 0 {
+            return Err(Fs123Error::FilesystemError {
+                errno,
+                message: format!("stat: {}", fs_path),
+            });
+        }
+    }
+
+    let stat = response
+        .get_str("content")
+        .and_then(|c| Fs123StatResult::from_str(&c));
+
+    if let Some(ref s) = stat {
+        cache.put_stat(fs_path, s.clone());
+    }
+
+    Ok(stat.map(|s| s.st_size).unwrap_or(-1))
 }
 
 // ── C API: Error handling ─────────────────────────────────────────
@@ -672,6 +826,51 @@ pub extern "C" fn fs123_mountall() -> c_int {
     0
 }
 
+// ── C API: fsync (per-file mirror) ───────────────────────────────
+
+/// Download a single remote file to local disk, regardless of whether
+/// `mirror=true` is set on the mount.
+///
+/// The file is stored at the local path corresponding to the mount
+/// point (e.g. if `http://srv` is mounted at `/mnt` and `path` is
+/// `/mnt/foo/bar`, the file is written to `/mnt/foo/bar`).  Parent
+/// directories are created as needed using the current umask.
+///
+/// If the file already exists locally it is not re-downloaded.
+///
+/// Returns 0 on success, -1 on error.
+#[no_mangle]
+pub extern "C" fn fs123_fsync(path: *const c_char) -> c_int {
+    clear_error();
+
+    let result = (|| -> Result<(), Fs123Error> {
+        let path_str = unsafe { cstr_to_str(path)? };
+        let resolved = resolve_path(path_str)?;
+        let local_path = format!("{}{}", resolved.mount_point, resolved.fs_path);
+
+        if std::path::Path::new(&local_path).exists() {
+            return Ok(());
+        }
+
+        let file_size =
+            remote_file_size(&resolved.client, &resolved.cache, &resolved.fs_path)?;
+        download_file(
+            &resolved.client,
+            &resolved.fs_path,
+            &local_path,
+            file_size,
+        )
+    })();
+
+    match result {
+        Ok(()) => 0,
+        Err(e) => {
+            set_error(&e);
+            -1
+        }
+    }
+}
+
 // ── C API: stat ───────────────────────────────────────────────────
 
 /// Get file/directory attributes for a path in the mount namespace.
@@ -687,19 +886,31 @@ pub extern "C" fn fs123_stat(path: *const c_char, buf: *mut fs123_stat_t) -> c_i
             return Err(Fs123Error::InvalidArgument("NULL buffer".to_string()));
         }
 
-        let (client, cache, fs_path) = resolve_path(path_str)?;
+        let resolved = resolve_path(path_str)?;
 
-        if let Some(cached) = cache.get_stat(&fs_path) {
+        // Mirror mode: if the file already exists locally, stat it directly.
+        if resolved.mirror {
+            let local_path = format!("{}{}", resolved.mount_point, resolved.fs_path);
+            if let Ok(stat) = stat_local_file(&local_path) {
+                return Ok(stat);
+            }
+            // Not mirrored yet — fall through to remote stat.
+        }
+
+        if let Some(cached) = resolved.cache.get_stat(&resolved.fs_path) {
             return Ok(cached);
         }
 
-        let response = client.request_raw(Fs123Function::Stat, &fs_path, None)?;
+        let response =
+            resolved
+                .client
+                .request_raw(Fs123Function::Stat, &resolved.fs_path, None)?;
 
         if let Some(errno) = response.errno() {
             if errno != 0 {
                 return Err(Fs123Error::FilesystemError {
                     errno,
-                    message: format!("stat: {}", fs_path),
+                    message: format!("stat: {}", resolved.fs_path),
                 });
             }
         }
@@ -712,7 +923,7 @@ pub extern "C" fn fs123_stat(path: *const c_char, buf: *mut fs123_stat_t) -> c_i
             Fs123Error::InvalidResponse(format!("Cannot parse stat: {}", content))
         })?;
 
-        cache.put_stat(&fs_path, stat.clone());
+        resolved.cache.put_stat(&resolved.fs_path, stat.clone());
         Ok(stat)
     })();
 
@@ -757,9 +968,9 @@ pub extern "C" fn fs123_opendir(path: *const c_char) -> *mut c_void {
 
     let result = (|| -> Result<DirHandle, Fs123Error> {
         let path_str = unsafe { cstr_to_str(path)? };
-        let (client, cache, fs_path) = resolve_path(path_str)?;
+        let resolved = resolve_path(path_str)?;
 
-        if let Some(cached) = cache.get_dir(&fs_path) {
+        if let Some(cached) = resolved.cache.get_dir(&resolved.fs_path) {
             return Ok(DirHandle {
                 entries: cached,
                 index: 0,
@@ -776,8 +987,11 @@ pub extern "C" fn fs123_opendir(path: *const c_char) -> *mut c_void {
             };
             let params_ref: Vec<&str> = params.iter().map(|s| s.as_str()).collect();
 
-            let response =
-                client.request(Fs123Function::Readdir, &fs_path, Some(&params_ref))?;
+            let response = resolved.client.request(
+                Fs123Function::Readdir,
+                &resolved.fs_path,
+                Some(&params_ref),
+            )?;
 
             if let Some(content) = response.content() {
                 all_entries.extend(DirEntryData::parse_entries(content));
@@ -794,7 +1008,7 @@ pub extern "C" fn fs123_opendir(path: *const c_char) -> *mut c_void {
             }
         }
 
-        cache.put_dir(&fs_path, all_entries.clone());
+        resolved.cache.put_dir(&resolved.fs_path, all_entries.clone());
 
         Ok(DirHandle {
             entries: all_entries,
@@ -883,37 +1097,42 @@ pub extern "C" fn fs123_open(path: *const c_char, mode: *const c_char) -> *mut c
             }
         }
 
-        let (client, cache, fs_path) = resolve_path(path_str)?;
+        let resolved = resolve_path(path_str)?;
 
+        // Mirror mode: download the file to local disk, then open locally.
+        if resolved.mirror {
+            let local_path = format!("{}{}", resolved.mount_point, resolved.fs_path);
+
+            if !std::path::Path::new(&local_path).exists() {
+                // Stat remote file to learn the file size for download.
+                let file_size = remote_file_size(
+                    &resolved.client,
+                    &resolved.cache,
+                    &resolved.fs_path,
+                )?;
+                download_file(
+                    &resolved.client,
+                    &resolved.fs_path,
+                    &local_path,
+                    file_size,
+                )?;
+            }
+
+            let file = std::fs::File::open(&local_path)?;
+            return Ok(FileHandle::Local { file });
+        }
+
+        // Non-mirror: remote file handle.
         // Stat to learn the file size (needed for EOF and SEEK_END).
-        // Check cache first to avoid a redundant round-trip after stat+open.
-        let file_size = if let Some(cached) = cache.get_stat(&fs_path) {
-            cached.st_size
-        } else {
-            let response = client.request_raw(Fs123Function::Stat, &fs_path, None)?;
-            if let Some(errno) = response.errno() {
-                if errno != 0 {
-                    return Err(Fs123Error::FilesystemError {
-                        errno,
-                        message: format!("open: {}", fs_path),
-                    });
-                }
-            }
+        let file_size = remote_file_size(
+            &resolved.client,
+            &resolved.cache,
+            &resolved.fs_path,
+        )?;
 
-            let stat = response
-                .get_str("content")
-                .and_then(|c| Fs123StatResult::from_str(&c));
-
-            if let Some(ref s) = stat {
-                cache.put_stat(&fs_path, s.clone());
-            }
-
-            stat.map(|s| s.st_size).unwrap_or(-1)
-        };
-
-        Ok(FileHandle {
-            client,
-            path: fs_path,
+        Ok(FileHandle::Remote {
+            client: resolved.client,
+            path: resolved.fs_path,
             position: 0,
             file_size,
         })
@@ -946,52 +1165,67 @@ pub extern "C" fn fs123_read(file: *mut c_void, buf: *mut c_void, count: usize) 
 
     let handle = unsafe { &mut *(file as *mut FileHandle) };
 
-    // EOF check
-    if handle.file_size >= 0 && handle.position >= handle.file_size as u64 {
-        return 0;
-    }
-
-    // The fs123 /f endpoint uses KiB-aligned offset and length.
-    let offset = handle.position as i64;
-    let offset_kib = offset / 1024;
-    let end_byte = offset + count as i64;
-    let end_kib = (end_byte + 1023) / 1024;
-    let len_kib = end_kib - offset_kib;
-
-    // Protocol: /f/path?Len;Offset  (length first, offset second, both in KiB)
-    let params = [len_kib.to_string(), offset_kib.to_string()];
-    let params_ref: Vec<&str> = params.iter().map(|s| s.as_str()).collect();
-
-    let response = match handle
-        .client
-        .request(Fs123Function::Read, &handle.path, Some(&params_ref))
-    {
-        Ok(r) => r,
-        Err(e) => {
-            set_error(&e);
-            return -1;
+    match handle {
+        FileHandle::Local { file } => {
+            let buf_slice =
+                unsafe { std::slice::from_raw_parts_mut(buf as *mut u8, count) };
+            match file.read(buf_slice) {
+                Ok(n) => n as isize,
+                Err(e) => {
+                    set_error(&Fs123Error::IoError(e));
+                    -1
+                }
+            }
         }
-    };
+        FileHandle::Remote {
+            client,
+            path,
+            position,
+            file_size,
+        } => {
+            // EOF check
+            if *file_size >= 0 && *position >= *file_size as u64 {
+                return 0;
+            }
 
-    let content = response.content().unwrap_or(&[]);
+            // The fs123 /f endpoint uses KiB-aligned offset and length.
+            let offset = *position as i64;
+            let offset_kib = offset / 1024;
+            let end_byte = offset + count as i64;
+            let end_kib = (end_byte + 1023) / 1024;
+            let len_kib = end_kib - offset_kib;
 
-    // Trim to the exact byte range requested
-    let skip = (offset % 1024) as usize;
-    let available = content.len().saturating_sub(skip);
-    let to_copy = available.min(count);
+            let params = [len_kib.to_string(), offset_kib.to_string()];
+            let params_ref: Vec<&str> = params.iter().map(|s| s.as_str()).collect();
 
-    if to_copy > 0 {
-        unsafe {
-            ptr::copy_nonoverlapping(
-                content[skip..skip + to_copy].as_ptr(),
-                buf as *mut u8,
-                to_copy,
-            );
+            let response = match client.request(Fs123Function::Read, path, Some(&params_ref)) {
+                Ok(r) => r,
+                Err(e) => {
+                    set_error(&e);
+                    return -1;
+                }
+            };
+
+            let content = response.content().unwrap_or(&[]);
+
+            let skip = (offset % 1024) as usize;
+            let available = content.len().saturating_sub(skip);
+            let to_copy = available.min(count);
+
+            if to_copy > 0 {
+                unsafe {
+                    ptr::copy_nonoverlapping(
+                        content[skip..skip + to_copy].as_ptr(),
+                        buf as *mut u8,
+                        to_copy,
+                    );
+                }
+                *position += to_copy as u64;
+            }
+
+            to_copy as isize
         }
-        handle.position += to_copy as u64;
     }
-
-    to_copy as isize
 }
 
 /// Reposition the read offset of an open file.
@@ -1009,30 +1243,55 @@ pub extern "C" fn fs123_seek(file: *mut c_void, offset: i64, whence: c_int) -> i
 
     let handle = unsafe { &mut *(file as *mut FileHandle) };
 
-    let new_pos: i64 = match whence {
-        0 => offset,                          // SEEK_SET
-        1 => handle.position as i64 + offset, // SEEK_CUR
-        2 => {
-            // SEEK_END
-            if handle.file_size < 0 {
-                set_raw_error(libc::ESPIPE, "Unknown file size; cannot SEEK_END");
+    match handle {
+        FileHandle::Local { file } => {
+            let seek_from = match whence {
+                0 => SeekFrom::Start(offset as u64),
+                1 => SeekFrom::Current(offset),
+                2 => SeekFrom::End(offset),
+                _ => {
+                    set_raw_error(libc::EINVAL, "Invalid whence");
+                    return -1;
+                }
+            };
+            match file.seek(seek_from) {
+                Ok(pos) => pos as i64,
+                Err(e) => {
+                    set_error(&Fs123Error::IoError(e));
+                    -1
+                }
+            }
+        }
+        FileHandle::Remote {
+            position,
+            file_size,
+            ..
+        } => {
+            let new_pos: i64 = match whence {
+                0 => offset,                    // SEEK_SET
+                1 => *position as i64 + offset, // SEEK_CUR
+                2 => {
+                    if *file_size < 0 {
+                        set_raw_error(libc::ESPIPE, "Unknown file size; cannot SEEK_END");
+                        return -1;
+                    }
+                    *file_size + offset
+                }
+                _ => {
+                    set_raw_error(libc::EINVAL, "Invalid whence");
+                    return -1;
+                }
+            };
+
+            if new_pos < 0 {
+                set_raw_error(libc::EINVAL, "Seek to negative offset");
                 return -1;
             }
-            handle.file_size + offset
-        }
-        _ => {
-            set_raw_error(libc::EINVAL, "Invalid whence");
-            return -1;
-        }
-    };
 
-    if new_pos < 0 {
-        set_raw_error(libc::EINVAL, "Seek to negative offset");
-        return -1;
+            *position = new_pos as u64;
+            new_pos
+        }
     }
-
-    handle.position = new_pos as u64;
-    new_pos
 }
 
 /// Close a file handle and free its resources.
@@ -1066,18 +1325,21 @@ pub extern "C" fn fs123_readlink(path: *const c_char, buf: *mut c_char, bufsiz: 
 
     let result = (|| -> Result<String, Fs123Error> {
         let path_str = unsafe { cstr_to_str(path)? };
-        let (client, cache, fs_path) = resolve_path(path_str)?;
+        let resolved = resolve_path(path_str)?;
 
-        if let Some(cached) = cache.get_link(&fs_path) {
+        if let Some(cached) = resolved.cache.get_link(&resolved.fs_path) {
             return Ok(cached);
         }
 
-        let response = client.request(Fs123Function::Readlink, &fs_path, None)?;
+        let response =
+            resolved
+                .client
+                .request(Fs123Function::Readlink, &resolved.fs_path, None)?;
         let target = response
             .content_str()
             .ok_or_else(|| Fs123Error::InvalidResponse("Missing readlink target".to_string()))?;
 
-        cache.put_link(&fs_path, target.clone());
+        resolved.cache.put_link(&resolved.fs_path, target.clone());
         Ok(target)
     })();
 
@@ -1174,10 +1436,10 @@ mod tests {
         let mp = CString::new("/mnt/data").unwrap();
         assert_eq!(fs123_mount(url.as_ptr(), mp.as_ptr(), ptr::null()), 0);
 
-        let (_, _, fs_path) = resolve_path("/mnt/data/foo/bar.txt").unwrap();
+        let ResolvedPath { fs_path, .. } = resolve_path("/mnt/data/foo/bar.txt").unwrap();
         assert_eq!(fs_path, "/foo/bar.txt");
 
-        let (_, _, fs_path) = resolve_path("/mnt/data").unwrap();
+        let ResolvedPath { fs_path, .. } = resolve_path("/mnt/data").unwrap();
         assert_eq!(fs_path, "/");
 
         reset_mounts();
@@ -1196,12 +1458,12 @@ mod tests {
         fs123_mount(url2.as_ptr(), mp2.as_ptr(), ptr::null());
 
         // /mnt/deep/file → resolves to server2, path /file
-        let (client, _, fs_path) = resolve_path("/mnt/deep/file").unwrap();
+        let ResolvedPath { client, fs_path, .. } = resolve_path("/mnt/deep/file").unwrap();
         assert_eq!(fs_path, "/file");
         assert_eq!(client.port(), 8080);
 
         // /mnt/other → resolves to server1, path /other
-        let (client, _, fs_path) = resolve_path("/mnt/other").unwrap();
+        let ResolvedPath { client, fs_path, .. } = resolve_path("/mnt/other").unwrap();
         assert_eq!(fs_path, "/other");
         assert_eq!(client.port(), 8080);
 
@@ -1216,10 +1478,10 @@ mod tests {
         let mp = CString::new("/").unwrap();
         assert_eq!(fs123_mount(url.as_ptr(), mp.as_ptr(), ptr::null()), 0);
 
-        let (_, _, fs_path) = resolve_path("/any/path").unwrap();
+        let ResolvedPath { fs_path, .. } = resolve_path("/any/path").unwrap();
         assert_eq!(fs_path, "/any/path");
 
-        let (_, _, fs_path) = resolve_path("/").unwrap();
+        let ResolvedPath { fs_path, .. } = resolve_path("/").unwrap();
         assert_eq!(fs_path, "/");
 
         reset_mounts();
@@ -1627,5 +1889,136 @@ http://server2:9090            /mnt/logs   -
         drop(table);
 
         reset_mounts();
+    }
+
+    // ── Mirror option parsing ─────────────────────────────────────
+
+    #[test]
+    fn test_parse_mount_options_mirror_true() {
+        let opts = parse_mount_options("mirror=true").unwrap();
+        assert!(opts.mirror);
+    }
+
+    #[test]
+    fn test_parse_mount_options_mirror_yes() {
+        let opts = parse_mount_options("mirror=yes").unwrap();
+        assert!(opts.mirror);
+    }
+
+    #[test]
+    fn test_parse_mount_options_mirror_one() {
+        let opts = parse_mount_options("mirror=1").unwrap();
+        assert!(opts.mirror);
+    }
+
+    #[test]
+    fn test_parse_mount_options_mirror_false() {
+        let opts = parse_mount_options("mirror=false").unwrap();
+        assert!(!opts.mirror);
+    }
+
+    #[test]
+    fn test_parse_mount_options_mirror_default() {
+        let opts = parse_mount_options("cache_ttl_secs=10").unwrap();
+        assert!(!opts.mirror);
+    }
+
+    #[test]
+    fn test_mount_stores_mirror_flag() {
+        reset_mounts();
+
+        mount_internal("http://srv:80", "/mnt/m", Some("mirror=true")).unwrap();
+        let table = lock_mount_table();
+        assert!(table[0].mirror);
+        drop(table);
+
+        reset_mounts();
+    }
+
+    #[test]
+    fn test_resolve_path_returns_mirror() {
+        reset_mounts();
+
+        mount_internal("http://srv:80", "/mnt/m", Some("mirror=true")).unwrap();
+        let r = resolve_path("/mnt/m/file").unwrap();
+        assert!(r.mirror);
+        assert_eq!(r.mount_point, "/mnt/m");
+        assert_eq!(r.fs_path, "/file");
+
+        mount_internal("http://srv:80", "/mnt/n", None).unwrap();
+        let r = resolve_path("/mnt/n/file").unwrap();
+        assert!(!r.mirror);
+
+        reset_mounts();
+    }
+
+    // ── Mirror: local file handle ─────────────────────────────────
+
+    #[test]
+    fn test_local_file_handle_read_seek() {
+        use std::io::Write;
+
+        // Create a temp file with known content
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("testfile");
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            f.write_all(b"hello world").unwrap();
+        }
+
+        // Open as a Local FileHandle
+        let file = std::fs::File::open(&path).unwrap();
+        let mut handle = FileHandle::Local { file };
+
+        // Read via the handle
+        if let FileHandle::Local { ref mut file } = handle {
+            let mut buf = [0u8; 5];
+            let n = file.read(&mut buf).unwrap();
+            assert_eq!(n, 5);
+            assert_eq!(&buf, b"hello");
+
+            // Seek back to start
+            file.seek(SeekFrom::Start(0)).unwrap();
+            let mut buf2 = [0u8; 11];
+            let n = file.read(&mut buf2).unwrap();
+            assert_eq!(n, 11);
+            assert_eq!(&buf2, b"hello world");
+
+            // Seek to end
+            let pos = file.seek(SeekFrom::End(0)).unwrap();
+            assert_eq!(pos, 11);
+        }
+    }
+
+    #[test]
+    fn test_stat_local_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stattest");
+        std::fs::write(&path, "test data").unwrap();
+
+        let stat = stat_local_file(path.to_str().unwrap()).unwrap();
+        assert_eq!(stat.st_size, 9); // "test data" = 9 bytes
+        assert!(stat.st_mode & 0o100000 != 0); // regular file
+    }
+
+    #[test]
+    fn test_stat_local_file_not_found() {
+        assert!(stat_local_file("/nonexistent/path/xyz").is_err());
+    }
+
+    #[test]
+    fn test_download_file_creates_parents() {
+        // We can't test a real download without a server, but we can
+        // verify that download_file creates parent directories and
+        // handles a zero-byte file correctly.
+        let dir = tempfile::tempdir().unwrap();
+        let local_path = dir.path().join("a/b/c/empty");
+
+        // Create a dummy client (won't be used for a zero-byte file)
+        let client = Fs123HttpClient::new("localhost", 1, "7.3");
+        download_file(&client, "/dummy", local_path.to_str().unwrap(), 0).unwrap();
+
+        assert!(local_path.exists());
+        assert_eq!(std::fs::read(&local_path).unwrap().len(), 0);
     }
 }
