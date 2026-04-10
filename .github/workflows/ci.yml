@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ master ]
+    branches: [ rust-rewrite ]
   pull_request:
-    branches: [ master ]
+    branches: [ rust-rewrite ]
   workflow_dispatch:
 jobs:
   test:
