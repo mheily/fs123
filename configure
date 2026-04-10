@@ -1,8 +1,7 @@
 #!/bin/bash
 
-git fetch origin master
-
 if ! [ -d legacy ] ; then
+	git fetch origin master
 	mkdir legacy
 	git archive master | tar -C legacy/ -xf -
 fi
@@ -12,7 +11,17 @@ if ! [ -e legacy/Dockerfile ] ; then
   ln $(pwd)/Dockerfile.legacy legacy/Dockerfile
 fi
 
-docker build -t fs123rs:latest .
+if ! [[ -d .venv ]] ; then
+	if [[ "$(uname)" == "Darwin" ]] ; then
+		/opt/homebrew/bin/python3.12 -m venv .venv
+		source .venv/bin/activate
+		cd python ; pip3 install -e .[dev]
+	fi
+fi
 
-cd legacy
-docker build -t fs123cpp:latest .
+# TODO: move elsewhere
+
+#docker build -t fs123rs:latest .
+
+#cd legacy
+#docker build -t fs123cpp:latest .
