@@ -37,7 +37,7 @@ class TestMountConfig:
 
     def test_mount_bad_url_raises(self):
         with pytest.raises(OSError):
-            fs123.mount("http://127.0.0.1:1/nonexistent", "/fs123_bad_mount_test")
+            fs123.mount("http://127.0.0.1:1/nonexistent", "not_absolute")
 
     def test_umount_not_mounted_raises(self):
         with pytest.raises(OSError):
@@ -230,8 +230,17 @@ class TestFs123File:
 
 
 class TestFsync:
-    def test_path_fsync(self, mp):
-        Path(f"{mp}/hello.txt").fsync()
+    @pytest.fixture(autouse=True)
+    def _fsync_mount(self, server_url, tmp_path):
+        """Mount at a writable temp dir so fsync can download files."""
+        self._mp = str(tmp_path / "fsync_mnt")
+        os.makedirs(self._mp)
+        fs123.mount(server_url, self._mp)
+        yield
+        fs123.umount(self._mp)
 
-    def test_module_fsync(self, mp):
-        fs123.fsync(f"{mp}/hello.txt")
+    def test_path_fsync(self):
+        Path(f"{self._mp}/hello.txt").fsync()
+
+    def test_module_fsync(self):
+        fs123.fsync(f"{self._mp}/hello.txt")
