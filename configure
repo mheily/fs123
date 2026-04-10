@@ -14,9 +14,11 @@ fi
 if ! [[ -d .venv ]] ; then
 	if [[ "$(uname)" == "Darwin" ]] ; then
 		/opt/homebrew/bin/python3.12 -m venv .venv
-		source .venv/bin/activate
-		cd python ; pip3 install -e .[dev]
+	else
+		python3 -m venv .venv
 	fi
+	source .venv/bin/activate
+	cd python && pip install -e .[dev] && cd ..
 fi
 
 # TODO: move elsewhere
