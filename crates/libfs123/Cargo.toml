@@ -6,7 +6,7 @@ description = "C-compatible library providing POSIX-like filesystem access over 
 
 [lib]
 name = "fs123"
-crate-type = ["cdylib", "staticlib"]
+crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
 fs123-core = { path = "../fs123-core" }
