@@ -186,7 +186,9 @@ fn test_stat_directory() {
 #[ignore]
 fn test_stat_symlink() {
     let st = do_stat("link_to_hello");
-    assert_eq!(st.st_size, 13, "symlink target hello.txt should be 13 bytes");
+    // fs123 uses lstat semantics (symlink_metadata); st_size is the length
+    // of the symlink target string "hello.txt" (9), not the target file size.
+    assert_eq!(st.st_size, 9, "symlink st_size should be length of target path");
 }
 
 #[test]
@@ -389,8 +391,28 @@ fn test_deep_nesting() {
 #[test]
 #[ignore]
 fn test_fsync() {
-    setup();
-    let path = make_path("hello.txt");
-    let rc = fs123_fsync(path.as_ptr());
+    let url = env::var("FS123_TEST_SERVER_URL").expect("FS123_TEST_SERVER_URL not set");
+
+    // fsync downloads to the mount-point path on local disk, so we need
+    // a writable temporary directory as the mount point.
+    let tmpdir = tempfile::tempdir().expect("failed to create temp dir");
+    let mp = tmpdir.path().to_str().unwrap().to_string();
+
+    let proto = CString::new("7.3").unwrap();
+    fs123_set_proto(proto.as_ptr());
+    let url_c = CString::new(url).unwrap();
+    let mp_c = CString::new(mp.clone()).unwrap();
+    let rc = fs123_mount(url_c.as_ptr(), mp_c.as_ptr(), std::ptr::null());
+    assert_eq!(rc, 0, "mount for fsync test should succeed");
+
+    let file_path = CString::new(format!("{}/hello.txt", mp)).unwrap();
+    let rc = fs123_fsync(file_path.as_ptr());
     assert_eq!(rc, 0, "fsync should succeed");
+
+    // Verify the file was downloaded to local disk
+    let downloaded = std::fs::read(format!("{}/hello.txt", mp)).expect("downloaded file should exist");
+    assert_eq!(downloaded, b"Hello, fs123!");
+
+    let rc = fs123_umount(mp_c.as_ptr());
+    assert_eq!(rc, 0, "umount should succeed");
 }
