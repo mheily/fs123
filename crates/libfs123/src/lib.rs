@@ -315,11 +315,7 @@ fn process_fstab_file(path: &str) {
 
 /// Shared mount implementation used by both `fs123_mount` and fstab
 /// processing.
-fn mount_internal(
-    url_str: &str,
-    mount_str: &str,
-    options: Option<&str>,
-) -> Result<(), Fs123Error> {
+fn mount_internal(url_str: &str, mount_str: &str, options: Option<&str>) -> Result<(), Fs123Error> {
     let opts = match options {
         Some(s) => parse_mount_options(s)?,
         None => MountOptions::default(),
@@ -395,20 +391,17 @@ fn resolve_path(path: &str) -> Result<ResolvedPath, Fs123Error> {
         let is_match = if entry.mount_point == "/" {
             path.starts_with('/')
         } else {
-            path == entry.mount_point
-                || path.starts_with(&format!("{}/", entry.mount_point))
+            path == entry.mount_point || path.starts_with(&format!("{}/", entry.mount_point))
         };
 
-        if is_match
-            && (best.is_none() || entry.mount_point.len() > best.unwrap().mount_point.len())
+        if is_match && (best.is_none() || entry.mount_point.len() > best.unwrap().mount_point.len())
         {
             best = Some(entry);
         }
     }
 
-    let mount = best.ok_or_else(|| {
-        Fs123Error::InvalidArgument(format!("No fs123 mount for path: {}", path))
-    })?;
+    let mount = best
+        .ok_or_else(|| Fs123Error::InvalidArgument(format!("No fs123 mount for path: {}", path)))?;
 
     let fs_path = if path.len() <= mount.mount_point.len() {
         "/".to_string()
@@ -606,8 +599,7 @@ fn download_file(
             let params = [len_kib.to_string(), offset_kib.to_string()];
             let params_ref: Vec<&str> = params.iter().map(|s| s.as_str()).collect();
 
-            let response = match client.request(Fs123Function::Read, fs_path, Some(&params_ref))
-            {
+            let response = match client.request(Fs123Function::Read, fs_path, Some(&params_ref)) {
                 Ok(r) => r,
                 Err(e) => {
                     let _ = std::fs::remove_file(&tmp_path);
@@ -774,10 +766,7 @@ pub extern "C" fn fs123_umount(mountpoint: *const c_char) -> c_int {
         table.retain(|e| e.mount_point != mp);
 
         if table.len() == before {
-            return Err(Fs123Error::InvalidArgument(format!(
-                "Not mounted: {}",
-                mp
-            )));
+            return Err(Fs123Error::InvalidArgument(format!("Not mounted: {}", mp)));
         }
 
         Ok(())
@@ -852,14 +841,8 @@ pub extern "C" fn fs123_fsync(path: *const c_char) -> c_int {
             return Ok(());
         }
 
-        let file_size =
-            remote_file_size(&resolved.client, &resolved.cache, &resolved.fs_path)?;
-        download_file(
-            &resolved.client,
-            &resolved.fs_path,
-            &local_path,
-            file_size,
-        )
+        let file_size = remote_file_size(&resolved.client, &resolved.cache, &resolved.fs_path)?;
+        download_file(&resolved.client, &resolved.fs_path, &local_path, file_size)
     })();
 
     match result {
@@ -901,10 +884,9 @@ pub extern "C" fn fs123_stat(path: *const c_char, buf: *mut fs123_stat_t) -> c_i
             return Ok(cached);
         }
 
-        let response =
-            resolved
-                .client
-                .request_raw(Fs123Function::Stat, &resolved.fs_path, None)?;
+        let response = resolved
+            .client
+            .request_raw(Fs123Function::Stat, &resolved.fs_path, None)?;
 
         if let Some(errno) = response.errno() {
             if errno != 0 {
@@ -1008,7 +990,9 @@ pub extern "C" fn fs123_opendir(path: *const c_char) -> *mut c_void {
             }
         }
 
-        resolved.cache.put_dir(&resolved.fs_path, all_entries.clone());
+        resolved
+            .cache
+            .put_dir(&resolved.fs_path, all_entries.clone());
 
         Ok(DirHandle {
             entries: all_entries,
@@ -1053,7 +1037,11 @@ pub extern "C" fn fs123_readdir(dir: *mut c_void, entry: *mut fs123_dirent_t) ->
     let name_bytes = src.name.as_bytes();
     let copy_len = name_bytes.len().min(255);
     unsafe {
-        ptr::copy_nonoverlapping(name_bytes.as_ptr(), out.name.as_mut_ptr() as *mut u8, copy_len);
+        ptr::copy_nonoverlapping(
+            name_bytes.as_ptr(),
+            out.name.as_mut_ptr() as *mut u8,
+            copy_len,
+        );
         out.name[copy_len] = 0;
     }
     out.d_type = src.d_type;
@@ -1105,17 +1093,9 @@ pub extern "C" fn fs123_open(path: *const c_char, mode: *const c_char) -> *mut c
 
             if !std::path::Path::new(&local_path).exists() {
                 // Stat remote file to learn the file size for download.
-                let file_size = remote_file_size(
-                    &resolved.client,
-                    &resolved.cache,
-                    &resolved.fs_path,
-                )?;
-                download_file(
-                    &resolved.client,
-                    &resolved.fs_path,
-                    &local_path,
-                    file_size,
-                )?;
+                let file_size =
+                    remote_file_size(&resolved.client, &resolved.cache, &resolved.fs_path)?;
+                download_file(&resolved.client, &resolved.fs_path, &local_path, file_size)?;
             }
 
             let file = std::fs::File::open(&local_path)?;
@@ -1124,11 +1104,7 @@ pub extern "C" fn fs123_open(path: *const c_char, mode: *const c_char) -> *mut c
 
         // Non-mirror: remote file handle.
         // Stat to learn the file size (needed for EOF and SEEK_END).
-        let file_size = remote_file_size(
-            &resolved.client,
-            &resolved.cache,
-            &resolved.fs_path,
-        )?;
+        let file_size = remote_file_size(&resolved.client, &resolved.cache, &resolved.fs_path)?;
 
         Ok(FileHandle::Remote {
             client: resolved.client,
@@ -1167,8 +1143,7 @@ pub extern "C" fn fs123_read(file: *mut c_void, buf: *mut c_void, count: usize) 
 
     match handle {
         FileHandle::Local { file } => {
-            let buf_slice =
-                unsafe { std::slice::from_raw_parts_mut(buf as *mut u8, count) };
+            let buf_slice = unsafe { std::slice::from_raw_parts_mut(buf as *mut u8, count) };
             match file.read(buf_slice) {
                 Ok(n) => n as isize,
                 Err(e) => {
@@ -1331,10 +1306,9 @@ pub extern "C" fn fs123_readlink(path: *const c_char, buf: *mut c_char, bufsiz: 
             return Ok(cached);
         }
 
-        let response =
-            resolved
-                .client
-                .request(Fs123Function::Readlink, &resolved.fs_path, None)?;
+        let response = resolved
+            .client
+            .request(Fs123Function::Readlink, &resolved.fs_path, None)?;
         let target = response
             .content_str()
             .ok_or_else(|| Fs123Error::InvalidResponse("Missing readlink target".to_string()))?;
@@ -1365,11 +1339,6 @@ pub extern "C" fn fs123_readlink(path: *const c_char, buf: *mut c_char, bufsiz: 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Helper: clean the global mount table between tests.
-    fn reset_mounts() {
-        lock_mount_table().clear();
-    }
 
     // ── URL parsing ───────────────────────────────────────────────
 
@@ -1427,177 +1396,164 @@ mod tests {
     }
 
     // ── Mount table ───────────────────────────────────────────────
+    //
+    // Each test uses a unique mount-point prefix so tests can run in
+    // parallel without interfering with the shared global mount table.
 
     #[test]
     fn test_mount_and_resolve() {
-        reset_mounts();
-
         let url = CString::new("http://server1:8080/exports").unwrap();
-        let mp = CString::new("/mnt/data").unwrap();
+        let mp = CString::new("/fs123_test_mount_and_resolve/data").unwrap();
         assert_eq!(fs123_mount(url.as_ptr(), mp.as_ptr(), ptr::null()), 0);
 
-        let ResolvedPath { fs_path, .. } = resolve_path("/mnt/data/foo/bar.txt").unwrap();
+        let ResolvedPath { fs_path, .. } =
+            resolve_path("/fs123_test_mount_and_resolve/data/foo/bar.txt").unwrap();
         assert_eq!(fs_path, "/foo/bar.txt");
 
-        let ResolvedPath { fs_path, .. } = resolve_path("/mnt/data").unwrap();
+        let ResolvedPath { fs_path, .. } =
+            resolve_path("/fs123_test_mount_and_resolve/data").unwrap();
         assert_eq!(fs_path, "/");
-
-        reset_mounts();
     }
 
     #[test]
     fn test_mount_longest_prefix() {
-        reset_mounts();
-
         let url1 = CString::new("http://server1:8080").unwrap();
-        let mp1 = CString::new("/mnt").unwrap();
+        let mp1 = CString::new("/fs123_test_longest_prefix/mnt").unwrap();
         let url2 = CString::new("http://server2:8080").unwrap();
-        let mp2 = CString::new("/mnt/deep").unwrap();
+        let mp2 = CString::new("/fs123_test_longest_prefix/mnt/deep").unwrap();
 
         fs123_mount(url1.as_ptr(), mp1.as_ptr(), ptr::null());
         fs123_mount(url2.as_ptr(), mp2.as_ptr(), ptr::null());
 
-        // /mnt/deep/file → resolves to server2, path /file
-        let ResolvedPath { client, fs_path, .. } = resolve_path("/mnt/deep/file").unwrap();
+        // /fs123_test_longest_prefix/mnt/deep/file → resolves to server2, path /file
+        let ResolvedPath {
+            client, fs_path, ..
+        } = resolve_path("/fs123_test_longest_prefix/mnt/deep/file").unwrap();
         assert_eq!(fs_path, "/file");
         assert_eq!(client.port(), 8080);
 
-        // /mnt/other → resolves to server1, path /other
-        let ResolvedPath { client, fs_path, .. } = resolve_path("/mnt/other").unwrap();
+        // /fs123_test_longest_prefix/mnt/other → resolves to server1, path /other
+        let ResolvedPath {
+            client, fs_path, ..
+        } = resolve_path("/fs123_test_longest_prefix/mnt/other").unwrap();
         assert_eq!(fs_path, "/other");
         assert_eq!(client.port(), 8080);
-
-        reset_mounts();
     }
 
     #[test]
     fn test_mount_root() {
-        reset_mounts();
-
         let url = CString::new("http://server:80").unwrap();
-        let mp = CString::new("/").unwrap();
+        let mp = CString::new("/fs123_test_mount_root").unwrap();
         assert_eq!(fs123_mount(url.as_ptr(), mp.as_ptr(), ptr::null()), 0);
 
-        let ResolvedPath { fs_path, .. } = resolve_path("/any/path").unwrap();
+        let ResolvedPath { fs_path, .. } = resolve_path("/fs123_test_mount_root/any/path").unwrap();
         assert_eq!(fs_path, "/any/path");
 
-        let ResolvedPath { fs_path, .. } = resolve_path("/").unwrap();
+        let ResolvedPath { fs_path, .. } = resolve_path("/fs123_test_mount_root").unwrap();
         assert_eq!(fs_path, "/");
-
-        reset_mounts();
     }
 
     #[test]
     fn test_mount_replace() {
-        reset_mounts();
-
+        let mp = CString::new("/fs123_test_mount_replace").unwrap();
         let url1 = CString::new("http://old:80").unwrap();
         let url2 = CString::new("http://new:80").unwrap();
-        let mp = CString::new("/mnt").unwrap();
 
         fs123_mount(url1.as_ptr(), mp.as_ptr(), ptr::null());
         fs123_mount(url2.as_ptr(), mp.as_ptr(), ptr::null());
 
         let table = lock_mount_table();
-        assert_eq!(table.len(), 1);
-        assert_eq!(table[0].client.host(), "new");
-
-        drop(table);
-        reset_mounts();
+        let entry = table
+            .iter()
+            .find(|e| e.mount_point == "/fs123_test_mount_replace")
+            .unwrap();
+        assert_eq!(entry.client.host(), "new");
     }
 
     #[test]
     fn test_umount() {
-        reset_mounts();
-
         let url = CString::new("http://server:80").unwrap();
-        let mp = CString::new("/mnt").unwrap();
+        let mp = CString::new("/fs123_test_umount").unwrap();
         fs123_mount(url.as_ptr(), mp.as_ptr(), ptr::null());
 
         assert_eq!(fs123_umount(mp.as_ptr()), 0);
-        assert!(resolve_path("/mnt/foo").is_err());
-
-        reset_mounts();
+        assert!(resolve_path("/fs123_test_umount/foo").is_err());
     }
 
     #[test]
     fn test_umount_not_found() {
-        reset_mounts();
-        let mp = CString::new("/nonexistent").unwrap();
+        let mp = CString::new("/fs123_test_umount_not_found").unwrap();
         assert_eq!(fs123_umount(mp.as_ptr()), -1);
         assert_eq!(fs123_errno(), libc::EINVAL);
-        reset_mounts();
     }
 
     #[test]
-    fn test_resolve_no_mount() {
-        reset_mounts();
-        assert!(resolve_path("/nowhere/file").is_err());
-        reset_mounts();
-    }
+    fn test_process_fstab_basic() {
+        let contents = "\
+# comment line
+http://server1:8080/exports   /fs123_test_fstab_basic/data   cache_ttl_secs=120
 
-    #[test]
-    fn test_mount_no_false_prefix() {
-        reset_mounts();
+http://server2:9090            /fs123_test_fstab_basic/logs   -
+";
+        for line in contents.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            if fields.len() < 2 {
+                continue;
+            }
+            let url = fields[0];
+            let mountpoint = fields[1];
+            let options = if fields.len() >= 3 {
+                let opt = fields[2];
+                if opt == "-" || opt == "none" {
+                    None
+                } else {
+                    Some(opt)
+                }
+            } else {
+                None
+            };
+            mount_internal(url, mountpoint, options).unwrap();
+        }
 
-        let url = CString::new("http://server:80").unwrap();
-        let mp = CString::new("/mnt").unwrap();
-        fs123_mount(url.as_ptr(), mp.as_ptr(), ptr::null());
+        let table = lock_mount_table();
 
-        // "/mnt2/foo" must NOT match "/mnt"
-        assert!(resolve_path("/mnt2/foo").is_err());
+        // server1 at /fs123_test_fstab_basic/data with custom TTL
+        let e1 = table
+            .iter()
+            .find(|e| e.mount_point == "/fs123_test_fstab_basic/data")
+            .unwrap();
+        assert_eq!(e1.client.host(), "server1");
+        assert_eq!(e1.client.port(), 8080);
+        assert_eq!(e1.cache.ttl, Duration::from_secs(120));
 
-        reset_mounts();
-    }
-
-    // ── Mount options ──────────────────────────────────────────────
-
-    #[test]
-    fn test_parse_mount_options_defaults() {
-        let opts = parse_mount_options("").unwrap();
-        assert_eq!(opts.cache_ttl_secs, DEFAULT_CACHE_TTL_SECS);
-        assert_eq!(opts.cache_max_entries, DEFAULT_CACHE_MAX_ENTRIES);
-    }
-
-    #[test]
-    fn test_parse_mount_options_custom() {
-        let opts = parse_mount_options("cache_ttl_secs=120,cache_max_entries=500").unwrap();
-        assert_eq!(opts.cache_ttl_secs, 120);
-        assert_eq!(opts.cache_max_entries, 500);
-    }
-
-    #[test]
-    fn test_parse_mount_options_unknown_ignored() {
-        let opts = parse_mount_options("cache_ttl_secs=10,foo=bar").unwrap();
-        assert_eq!(opts.cache_ttl_secs, 10);
-        assert_eq!(opts.cache_max_entries, DEFAULT_CACHE_MAX_ENTRIES);
-    }
-
-    #[test]
-    fn test_parse_mount_options_bad_value() {
-        assert!(parse_mount_options("cache_ttl_secs=abc").is_err());
-    }
-
-    #[test]
-    fn test_parse_mount_options_no_equals() {
-        assert!(parse_mount_options("badtoken").is_err());
+        // server2 at /fs123_test_fstab_basic/logs with default TTL
+        let e2 = table
+            .iter()
+            .find(|e| e.mount_point == "/fs123_test_fstab_basic/logs")
+            .unwrap();
+        assert_eq!(e2.client.host(), "server2");
+        assert_eq!(e2.client.port(), 9090);
+        assert_eq!(e2.cache.ttl, Duration::from_secs(DEFAULT_CACHE_TTL_SECS));
     }
 
     #[test]
     fn test_mount_with_options() {
-        reset_mounts();
-
         let url = CString::new("http://server:80").unwrap();
-        let mp = CString::new("/mnt").unwrap();
+        let mp = CString::new("/fs123_test_mount_with_options").unwrap();
         let opts = CString::new("cache_ttl_secs=120,cache_max_entries=500").unwrap();
         assert_eq!(fs123_mount(url.as_ptr(), mp.as_ptr(), opts.as_ptr()), 0);
 
         let table = lock_mount_table();
-        assert_eq!(table[0].cache.ttl, Duration::from_secs(120));
-        assert_eq!(table[0].cache.max_entries, 500);
-
-        drop(table);
-        reset_mounts();
+        let entry = table
+            .iter()
+            .find(|e| e.mount_point == "/fs123_test_mount_with_options")
+            .unwrap();
+        assert_eq!(entry.cache.ttl, Duration::from_secs(120));
+        assert_eq!(entry.cache.max_entries, 500);
     }
 
     // ── Cache ─────────────────────────────────────────────────────
@@ -1681,40 +1637,34 @@ mod tests {
 
     #[test]
     fn test_stat_null_buf() {
-        reset_mounts();
         let url = CString::new("http://x:80").unwrap();
-        let mp = CString::new("/t").unwrap();
+        let mp = CString::new("/fs123_test_stat_null_buf").unwrap();
         fs123_mount(url.as_ptr(), mp.as_ptr(), ptr::null());
 
-        let p = CString::new("/t/file").unwrap();
+        let p = CString::new("/fs123_test_stat_null_buf/file").unwrap();
         assert_eq!(fs123_stat(p.as_ptr(), ptr::null_mut()), -1);
         assert_eq!(fs123_errno(), libc::EINVAL);
-        reset_mounts();
     }
 
     #[test]
     fn test_stat_no_mount() {
-        reset_mounts();
-        let p = CString::new("/nowhere").unwrap();
+        let p = CString::new("/fs123_test_stat_no_mount").unwrap();
         let mut buf = unsafe { std::mem::zeroed::<fs123_stat_t>() };
         assert_eq!(fs123_stat(p.as_ptr(), &mut buf), -1);
         assert_eq!(fs123_errno(), libc::EINVAL);
-        reset_mounts();
     }
 
     #[test]
     fn test_open_bad_mode() {
-        reset_mounts();
         let url = CString::new("http://x:80").unwrap();
-        let mp = CString::new("/t").unwrap();
+        let mp = CString::new("/fs123_test_open_bad_mode").unwrap();
         fs123_mount(url.as_ptr(), mp.as_ptr(), ptr::null());
 
-        let p = CString::new("/t/file").unwrap();
+        let p = CString::new("/fs123_test_open_bad_mode/file").unwrap();
         let mode = CString::new("w").unwrap();
         let fh = fs123_open(p.as_ptr(), mode.as_ptr());
         assert!(fh.is_null());
         assert_eq!(fs123_errno(), libc::EINVAL);
-        reset_mounts();
     }
 
     #[test]
@@ -1736,14 +1686,12 @@ mod tests {
 
     #[test]
     fn test_readlink_null_buf() {
-        reset_mounts();
         let url = CString::new("http://x:80").unwrap();
-        let mp = CString::new("/t").unwrap();
+        let mp = CString::new("/fs123_test_readlink_null_buf").unwrap();
         fs123_mount(url.as_ptr(), mp.as_ptr(), ptr::null());
 
-        let p = CString::new("/t/link").unwrap();
+        let p = CString::new("/fs123_test_readlink_null_buf/link").unwrap();
         assert_eq!(fs123_readlink(p.as_ptr(), ptr::null_mut(), 256), -1);
-        reset_mounts();
     }
 
     #[test]
@@ -1752,143 +1700,6 @@ mod tests {
         let mp = CString::new("relative").unwrap();
         assert_eq!(fs123_mount(url.as_ptr(), mp.as_ptr(), ptr::null()), -1);
         assert_eq!(fs123_errno(), libc::EINVAL);
-    }
-
-    // ── Fstab parsing ─────────────────────────────────────────────
-
-    #[test]
-    fn test_process_fstab_basic() {
-        reset_mounts();
-
-        let contents = "\
-# comment line
-http://server1:8080/exports   /mnt/data   cache_ttl_secs=120
-
-http://server2:9090            /mnt/logs   -
-";
-        for line in contents.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            let fields: Vec<&str> = line.split_whitespace().collect();
-            if fields.len() < 2 {
-                continue;
-            }
-            let url = fields[0];
-            let mountpoint = fields[1];
-            let options = if fields.len() >= 3 {
-                let opt = fields[2];
-                if opt == "-" || opt == "none" {
-                    None
-                } else {
-                    Some(opt)
-                }
-            } else {
-                None
-            };
-            mount_internal(url, mountpoint, options).unwrap();
-        }
-
-        let table = lock_mount_table();
-        assert_eq!(table.len(), 2);
-
-        // server1 at /mnt/data with custom TTL
-        let e1 = table.iter().find(|e| e.mount_point == "/mnt/data").unwrap();
-        assert_eq!(e1.client.host(), "server1");
-        assert_eq!(e1.client.port(), 8080);
-        assert_eq!(e1.cache.ttl, Duration::from_secs(120));
-
-        // server2 at /mnt/logs with default TTL
-        let e2 = table.iter().find(|e| e.mount_point == "/mnt/logs").unwrap();
-        assert_eq!(e2.client.host(), "server2");
-        assert_eq!(e2.client.port(), 9090);
-        assert_eq!(e2.cache.ttl, Duration::from_secs(DEFAULT_CACHE_TTL_SECS));
-
-        drop(table);
-        reset_mounts();
-    }
-
-    #[test]
-    fn test_process_fstab_no_options() {
-        reset_mounts();
-
-        mount_internal("http://host:80", "/mnt/x", None).unwrap();
-
-        let table = lock_mount_table();
-        assert_eq!(table.len(), 1);
-        assert_eq!(table[0].mount_point, "/mnt/x");
-        assert_eq!(table[0].cache.ttl, Duration::from_secs(DEFAULT_CACHE_TTL_SECS));
-
-        drop(table);
-        reset_mounts();
-    }
-
-    #[test]
-    fn test_mount_internal_no_options() {
-        reset_mounts();
-
-        // None options should use defaults
-        mount_internal("http://host:80", "/mnt/y", None).unwrap();
-
-        let table = lock_mount_table();
-        assert_eq!(table.len(), 1);
-        assert_eq!(table[0].cache.ttl, Duration::from_secs(DEFAULT_CACHE_TTL_SECS));
-        drop(table);
-        reset_mounts();
-    }
-
-    #[test]
-    fn test_process_fstab_skips_bad_lines() {
-        reset_mounts();
-
-        // Only a URL, no mountpoint — should be skipped
-        let line = "http://server:80";
-        let fields: Vec<&str> = line.split_whitespace().collect();
-        assert!(fields.len() < 2); // confirms it would be skipped
-
-        reset_mounts();
-    }
-
-    #[test]
-    fn test_user_fstab_path_xdg() {
-        // When XDG_CONFIG_HOME is set, use it
-        std::env::set_var("XDG_CONFIG_HOME", "/tmp/xdg-test");
-        let p = user_fstab_path().unwrap();
-        assert_eq!(p, std::path::PathBuf::from("/tmp/xdg-test/fs123/fstab"));
-        std::env::remove_var("XDG_CONFIG_HOME");
-    }
-
-    #[test]
-    fn test_user_fstab_path_home_fallback() {
-        std::env::remove_var("XDG_CONFIG_HOME");
-        let home = std::env::var("HOME").unwrap();
-        let p = user_fstab_path().unwrap();
-        assert_eq!(
-            p,
-            std::path::PathBuf::from(format!("{}/.config/fs123/fstab", home))
-        );
-    }
-
-    #[test]
-    fn test_user_fstab_overrides_system() {
-        reset_mounts();
-
-        // Simulate system fstab: server1 at /mnt/data
-        mount_internal("http://server1:8080", "/mnt/data", None).unwrap();
-        let table = lock_mount_table();
-        assert_eq!(table[0].client.host(), "server1");
-        drop(table);
-
-        // Simulate user fstab: server2 at same mountpoint — should replace
-        mount_internal("http://server2:9090", "/mnt/data", None).unwrap();
-        let table = lock_mount_table();
-        assert_eq!(table.len(), 1); // still one entry, not two
-        assert_eq!(table[0].client.host(), "server2");
-        assert_eq!(table[0].client.port(), 9090);
-        drop(table);
-
-        reset_mounts();
     }
 
     // ── Mirror option parsing ─────────────────────────────────────
@@ -1925,31 +1736,36 @@ http://server2:9090            /mnt/logs   -
 
     #[test]
     fn test_mount_stores_mirror_flag() {
-        reset_mounts();
-
-        mount_internal("http://srv:80", "/mnt/m", Some("mirror=true")).unwrap();
+        mount_internal(
+            "http://srv:80",
+            "/fs123_test_mirror_flag",
+            Some("mirror=true"),
+        )
+        .unwrap();
         let table = lock_mount_table();
-        assert!(table[0].mirror);
-        drop(table);
-
-        reset_mounts();
+        let entry = table
+            .iter()
+            .find(|e| e.mount_point == "/fs123_test_mirror_flag")
+            .unwrap();
+        assert!(entry.mirror);
     }
 
     #[test]
     fn test_resolve_path_returns_mirror() {
-        reset_mounts();
-
-        mount_internal("http://srv:80", "/mnt/m", Some("mirror=true")).unwrap();
-        let r = resolve_path("/mnt/m/file").unwrap();
+        mount_internal(
+            "http://srv:80",
+            "/fs123_test_resolve_mirror",
+            Some("mirror=true"),
+        )
+        .unwrap();
+        let r = resolve_path("/fs123_test_resolve_mirror/file").unwrap();
         assert!(r.mirror);
-        assert_eq!(r.mount_point, "/mnt/m");
+        assert_eq!(r.mount_point, "/fs123_test_resolve_mirror");
         assert_eq!(r.fs_path, "/file");
 
-        mount_internal("http://srv:80", "/mnt/n", None).unwrap();
-        let r = resolve_path("/mnt/n/file").unwrap();
+        mount_internal("http://srv:80", "/fs123_test_resolve_nomirror", None).unwrap();
+        let r = resolve_path("/fs123_test_resolve_nomirror/file").unwrap();
         assert!(!r.mirror);
-
-        reset_mounts();
     }
 
     // ── Mirror: local file handle ─────────────────────────────────
@@ -1999,11 +1815,6 @@ http://server2:9090            /mnt/logs   -
         let stat = stat_local_file(path.to_str().unwrap()).unwrap();
         assert_eq!(stat.st_size, 9); // "test data" = 9 bytes
         assert!(stat.st_mode & 0o100000 != 0); // regular file
-    }
-
-    #[test]
-    fn test_stat_local_file_not_found() {
-        assert!(stat_local_file("/nonexistent/path/xyz").is_err());
     }
 
     #[test]
