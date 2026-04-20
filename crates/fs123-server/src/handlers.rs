@@ -505,3 +505,335 @@ pub async fn handle_passthrough(
 ) -> HttpResponse {
     Fs123ResponseBuilder::build_error(501, "Passthrough endpoint not implemented")
 }
+
+// --- v8 write operation handlers ---
+
+use crate::backends::WritableBackend;
+use std::sync::Arc;
+
+/// Helper: get writable backend or return EROFS response
+fn get_writable_backend(config: &ServerConfig) -> Result<&Arc<dyn WritableBackend>, HttpResponse> {
+    config.writable_backend.as_ref().ok_or_else(|| {
+        Fs123ResponseBuilder::new()
+            .errno(libc::EROFS)
+            .build()
+    })
+}
+
+/// Helper: build JSON success response (errno=0) with no cache
+fn write_ok() -> HttpResponse {
+    Fs123ResponseBuilder::new().errno(0).max_age(0).build_json()
+}
+
+/// Helper: build JSON error response from BackendError with no cache
+fn write_err(e: crate::backends::BackendError) -> HttpResponse {
+    Fs123ResponseBuilder::new().errno(e.errno).max_age(0).build_json()
+}
+
+/// Handle mkdir - query: mode
+pub async fn handle_mkdir(request: Fs123Request, config: &ServerConfig) -> HttpResponse {
+    let wb = match get_writable_backend(config) {
+        Ok(wb) => wb,
+        Err(resp) => return resp,
+    };
+    if request.query_params.is_empty() {
+        return Fs123ResponseBuilder::build_error(400, "Missing mode parameter");
+    }
+    let mode: u32 = match request.query_params[0].parse() {
+        Ok(v) => v,
+        Err(_) => return Fs123ResponseBuilder::build_error(400, "Invalid mode parameter"),
+    };
+    match wb.mkdir(&request.path, mode).await {
+        Ok(()) => write_ok(),
+        Err(e) => write_err(e),
+    }
+}
+
+/// Handle rmdir
+pub async fn handle_rmdir(request: Fs123Request, config: &ServerConfig) -> HttpResponse {
+    let wb = match get_writable_backend(config) {
+        Ok(wb) => wb,
+        Err(resp) => return resp,
+    };
+    match wb.rmdir(&request.path).await {
+        Ok(()) => write_ok(),
+        Err(e) => write_err(e),
+    }
+}
+
+/// Handle chmod - query: mode
+pub async fn handle_chmod(request: Fs123Request, config: &ServerConfig) -> HttpResponse {
+    let wb = match get_writable_backend(config) {
+        Ok(wb) => wb,
+        Err(resp) => return resp,
+    };
+    if request.query_params.is_empty() {
+        return Fs123ResponseBuilder::build_error(400, "Missing mode parameter");
+    }
+    let mode: u32 = match request.query_params[0].parse() {
+        Ok(v) => v,
+        Err(_) => return Fs123ResponseBuilder::build_error(400, "Invalid mode parameter"),
+    };
+    match wb.chmod(&request.path, mode).await {
+        Ok(()) => write_ok(),
+        Err(e) => write_err(e),
+    }
+}
+
+/// Handle chown - query: uid;gid
+pub async fn handle_chown(request: Fs123Request, config: &ServerConfig) -> HttpResponse {
+    let wb = match get_writable_backend(config) {
+        Ok(wb) => wb,
+        Err(resp) => return resp,
+    };
+    if request.query_params.len() < 2 {
+        return Fs123ResponseBuilder::build_error(400, "Missing uid;gid parameters");
+    }
+    let uid: u32 = match request.query_params[0].parse() {
+        Ok(v) => v,
+        Err(_) => return Fs123ResponseBuilder::build_error(400, "Invalid uid parameter"),
+    };
+    let gid: u32 = match request.query_params[1].parse() {
+        Ok(v) => v,
+        Err(_) => return Fs123ResponseBuilder::build_error(400, "Invalid gid parameter"),
+    };
+    match wb.chown(&request.path, uid, gid).await {
+        Ok(()) => write_ok(),
+        Err(e) => write_err(e),
+    }
+}
+
+/// Handle utimens - query: atime_sec;atime_nsec;mtime_sec;mtime_nsec
+pub async fn handle_utimens(request: Fs123Request, config: &ServerConfig) -> HttpResponse {
+    let wb = match get_writable_backend(config) {
+        Ok(wb) => wb,
+        Err(resp) => return resp,
+    };
+    if request.query_params.len() < 4 {
+        return Fs123ResponseBuilder::build_error(400, "Missing time parameters (atime_sec;atime_nsec;mtime_sec;mtime_nsec)");
+    }
+    let atime_sec: i64 = match request.query_params[0].parse() {
+        Ok(v) => v,
+        Err(_) => return Fs123ResponseBuilder::build_error(400, "Invalid atime_sec"),
+    };
+    let atime_nsec: i64 = match request.query_params[1].parse() {
+        Ok(v) => v,
+        Err(_) => return Fs123ResponseBuilder::build_error(400, "Invalid atime_nsec"),
+    };
+    let mtime_sec: i64 = match request.query_params[2].parse() {
+        Ok(v) => v,
+        Err(_) => return Fs123ResponseBuilder::build_error(400, "Invalid mtime_sec"),
+    };
+    let mtime_nsec: i64 = match request.query_params[3].parse() {
+        Ok(v) => v,
+        Err(_) => return Fs123ResponseBuilder::build_error(400, "Invalid mtime_nsec"),
+    };
+    match wb.utimens(&request.path, (atime_sec, atime_nsec), (mtime_sec, mtime_nsec)).await {
+        Ok(()) => write_ok(),
+        Err(e) => write_err(e),
+    }
+}
+
+/// Handle symlink - query: target (the URL path is the linkpath)
+pub async fn handle_create_symlink(request: Fs123Request, config: &ServerConfig) -> HttpResponse {
+    let wb = match get_writable_backend(config) {
+        Ok(wb) => wb,
+        Err(resp) => return resp,
+    };
+    if request.query_params.is_empty() {
+        return Fs123ResponseBuilder::build_error(400, "Missing target parameter");
+    }
+    let target = &request.query_params[0];
+    match wb.symlink(target, &request.path).await {
+        Ok(()) => write_ok(),
+        Err(e) => write_err(e),
+    }
+}
+
+/// Handle link - query: newpath (the URL path is the oldpath)
+pub async fn handle_link(request: Fs123Request, config: &ServerConfig) -> HttpResponse {
+    let wb = match get_writable_backend(config) {
+        Ok(wb) => wb,
+        Err(resp) => return resp,
+    };
+    if request.query_params.is_empty() {
+        return Fs123ResponseBuilder::build_error(400, "Missing newpath parameter");
+    }
+    let newpath = &request.query_params[0];
+    match wb.link(&request.path, newpath).await {
+        Ok(()) => write_ok(),
+        Err(e) => write_err(e),
+    }
+}
+
+/// Handle unlink
+pub async fn handle_unlink(request: Fs123Request, config: &ServerConfig) -> HttpResponse {
+    let wb = match get_writable_backend(config) {
+        Ok(wb) => wb,
+        Err(resp) => return resp,
+    };
+    match wb.unlink(&request.path).await {
+        Ok(()) => write_ok(),
+        Err(e) => write_err(e),
+    }
+}
+
+/// Handle rename - query: newpath
+pub async fn handle_rename(request: Fs123Request, config: &ServerConfig) -> HttpResponse {
+    let wb = match get_writable_backend(config) {
+        Ok(wb) => wb,
+        Err(resp) => return resp,
+    };
+    if request.query_params.is_empty() {
+        return Fs123ResponseBuilder::build_error(400, "Missing newpath parameter");
+    }
+    let newpath = &request.query_params[0];
+    match wb.rename(&request.path, newpath).await {
+        Ok(()) => write_ok(),
+        Err(e) => write_err(e),
+    }
+}
+
+/// Handle setxattr - query: name;flags, value in request body
+/// Note: body handling requires changes at the routing level; for now, value is empty.
+pub async fn handle_setxattr(request: Fs123Request, config: &ServerConfig) -> HttpResponse {
+    let wb = match get_writable_backend(config) {
+        Ok(wb) => wb,
+        Err(resp) => return resp,
+    };
+    if request.query_params.len() < 2 {
+        return Fs123ResponseBuilder::build_error(400, "Missing name;flags parameters");
+    }
+    let name = &request.query_params[0];
+    let flags: u32 = match request.query_params[1].parse() {
+        Ok(v) => v,
+        Err(_) => return Fs123ResponseBuilder::build_error(400, "Invalid flags parameter"),
+    };
+    // TODO: read value from request body
+    match wb.setxattr(&request.path, name, &[], flags).await {
+        Ok(()) => write_ok(),
+        Err(e) => write_err(e),
+    }
+}
+
+/// Handle removexattr - query: name
+pub async fn handle_removexattr(request: Fs123Request, config: &ServerConfig) -> HttpResponse {
+    let wb = match get_writable_backend(config) {
+        Ok(wb) => wb,
+        Err(resp) => return resp,
+    };
+    if request.query_params.is_empty() {
+        return Fs123ResponseBuilder::build_error(400, "Missing name parameter");
+    }
+    let name = &request.query_params[0];
+    match wb.removexattr(&request.path, name).await {
+        Ok(()) => write_ok(),
+        Err(e) => write_err(e),
+    }
+}
+
+/// Helper: build JSON success response with extra fields
+fn write_ok_json_with(extra: serde_json::Value) -> HttpResponse {
+    let mut obj = serde_json::json!({"errno": 0});
+    if let (Some(base), Some(ext)) = (obj.as_object_mut(), extra.as_object()) {
+        for (k, v) in ext {
+            base.insert(k.clone(), v.clone());
+        }
+    }
+    HttpResponse::Ok().json(obj)
+}
+
+/// Helper: build JSON error response
+fn write_err_json(errno: i32) -> HttpResponse {
+    HttpResponse::Ok().json(serde_json::json!({"errno": errno}))
+}
+
+/// Handle create_upload - query: mode
+pub async fn handle_create_upload(request: Fs123Request, config: &ServerConfig) -> HttpResponse {
+    let wb = match get_writable_backend(config) {
+        Ok(wb) => wb,
+        Err(resp) => return resp,
+    };
+    if request.query_params.is_empty() {
+        return Fs123ResponseBuilder::build_error(400, "Missing mode parameter");
+    }
+    let mode: u32 = match request.query_params[0].parse() {
+        Ok(v) => v,
+        Err(_) => return Fs123ResponseBuilder::build_error(400, "Invalid mode parameter"),
+    };
+    match wb.create_upload(&request.path, mode).await {
+        Ok(upload_id) => write_ok_json_with(serde_json::json!({"upload_id": upload_id})),
+        Err(e) => write_err_json(e.errno),
+    }
+}
+
+/// Handle upload_part - query: upload_id;part_number, data in request body
+pub async fn handle_upload_part(request: Fs123Request, config: &ServerConfig, body: &[u8]) -> HttpResponse {
+    let wb = match get_writable_backend(config) {
+        Ok(wb) => wb,
+        Err(resp) => return resp,
+    };
+    if request.query_params.len() < 2 {
+        return Fs123ResponseBuilder::build_error(400, "Missing upload_id;part_number parameters");
+    }
+    let upload_id = &request.query_params[0];
+    let part_number: u32 = match request.query_params[1].parse() {
+        Ok(v) => v,
+        Err(_) => return Fs123ResponseBuilder::build_error(400, "Invalid part_number"),
+    };
+    match wb.upload_part(upload_id, part_number, body).await {
+        Ok(()) => HttpResponse::Ok().json(serde_json::json!({"errno": 0})),
+        Err(e) => write_err_json(e.errno),
+    }
+}
+
+/// Handle complete_upload - query: upload_id
+pub async fn handle_complete_upload(request: Fs123Request, config: &ServerConfig) -> HttpResponse {
+    let wb = match get_writable_backend(config) {
+        Ok(wb) => wb,
+        Err(resp) => return resp,
+    };
+    if request.query_params.is_empty() {
+        return Fs123ResponseBuilder::build_error(400, "Missing upload_id parameter");
+    }
+    let upload_id = &request.query_params[0];
+    match wb.complete_upload(upload_id).await {
+        Ok(()) => HttpResponse::Ok().json(serde_json::json!({"errno": 0})),
+        Err(e) => write_err_json(e.errno),
+    }
+}
+
+/// Handle abort_upload - query: upload_id
+pub async fn handle_abort_upload(request: Fs123Request, config: &ServerConfig) -> HttpResponse {
+    let wb = match get_writable_backend(config) {
+        Ok(wb) => wb,
+        Err(resp) => return resp,
+    };
+    if request.query_params.is_empty() {
+        return Fs123ResponseBuilder::build_error(400, "Missing upload_id parameter");
+    }
+    let upload_id = &request.query_params[0];
+    match wb.abort_upload(upload_id).await {
+        Ok(()) => HttpResponse::Ok().json(serde_json::json!({"errno": 0})),
+        Err(e) => write_err_json(e.errno),
+    }
+}
+
+/// Handle access - query: mask
+pub async fn handle_access(request: Fs123Request, config: &ServerConfig) -> HttpResponse {
+    let wb = match get_writable_backend(config) {
+        Ok(wb) => wb,
+        Err(resp) => return resp,
+    };
+    if request.query_params.is_empty() {
+        return Fs123ResponseBuilder::build_error(400, "Missing mask parameter");
+    }
+    let mask: u32 = match request.query_params[0].parse() {
+        Ok(v) => v,
+        Err(_) => return Fs123ResponseBuilder::build_error(400, "Invalid mask parameter"),
+    };
+    match wb.check_access(&request.path, mask).await {
+        Ok(()) => write_ok(),
+        Err(e) => write_err(e),
+    }
+}

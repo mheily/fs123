@@ -1,15 +1,18 @@
 /// FileBackend - serves files from the local filesystem
 
 use async_trait::async_trait;
+use std::collections::HashMap;
 use std::fs;
+use std::io::Write;
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
-use std::time::UNIX_EPOCH;
+use std::sync::{Arc, RwLock};
+use std::time::{Instant, UNIX_EPOCH};
 
-use super::traits::Backend;
+use super::traits::{Backend, WritableBackend};
 use super::types::{
     AttributeInfo, BackendError, BackendResult, DirEntry, DirectoryListing, FileContent,
-    StatfsInfo,
+    StatfsInfo, UploadSession,
 };
 
 /// Strategy for computing ESTALE cookies
@@ -30,6 +33,7 @@ pub enum EstaleCookieSource {
 pub struct FileBackend {
     root: PathBuf,
     estalecookie_src: EstaleCookieSource,
+    uploads: Arc<RwLock<HashMap<String, UploadSession>>>,
 }
 
 impl FileBackend {
@@ -38,6 +42,7 @@ impl FileBackend {
         FileBackend {
             root,
             estalecookie_src: EstaleCookieSource::GetVersionIoctl,
+            uploads: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -46,6 +51,7 @@ impl FileBackend {
         FileBackend {
             root,
             estalecookie_src,
+            uploads: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -60,6 +66,25 @@ impl FileBackend {
     fn get_validator(metadata: &fs::Metadata) -> u64 {
         let mtime = metadata.modified().unwrap_or(UNIX_EPOCH);
         mtime.duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() as u64
+    }
+
+    /// Get the uploads directory, creating it if needed
+    fn uploads_dir(&self) -> PathBuf {
+        self.root.join(".fs123_uploads")
+    }
+
+    /// Remove upload sessions older than the given timeout, deleting their temp files.
+    pub fn reap_stale_uploads(&self, timeout: std::time::Duration) {
+        let now = Instant::now();
+        let mut uploads = self.uploads.write().unwrap();
+        uploads.retain(|_id, session| {
+            if now.duration_since(session.created_at) > timeout {
+                let _ = fs::remove_file(&session.temp_path);
+                false
+            } else {
+                true
+            }
+        });
     }
 
     /// Get estalecookie for a file based on the configured strategy
@@ -343,5 +368,202 @@ impl Backend for FileBackend {
 
     fn describe(&self) -> String {
         format!("file://{}", self.root.display())
+    }
+}
+
+#[async_trait]
+impl WritableBackend for FileBackend {
+    async fn mkdir(&self, path: &str, mode: u32) -> BackendResult<()> {
+        let full_path = self.resolve_path(path);
+        fs::create_dir(&full_path).map_err(|e| BackendError::from_io_error(&e))?;
+        let c_path = std::ffi::CString::new(full_path.to_string_lossy().as_bytes())
+            .map_err(|_| BackendError::new(libc::EINVAL, "Invalid path"))?;
+        let ret = unsafe { libc::chmod(c_path.as_ptr(), mode as libc::mode_t) };
+        if ret != 0 {
+            return Err(BackendError::from_io_error(&std::io::Error::last_os_error()));
+        }
+        Ok(())
+    }
+
+    async fn rmdir(&self, path: &str) -> BackendResult<()> {
+        let full_path = self.resolve_path(path);
+        fs::remove_dir(&full_path).map_err(|e| BackendError::from_io_error(&e))?;
+        Ok(())
+    }
+
+    async fn chmod(&self, path: &str, mode: u32) -> BackendResult<()> {
+        let full_path = self.resolve_path(path);
+        let c_path = std::ffi::CString::new(full_path.to_string_lossy().as_bytes())
+            .map_err(|_| BackendError::new(libc::EINVAL, "Invalid path"))?;
+        let ret = unsafe { libc::chmod(c_path.as_ptr(), mode as libc::mode_t) };
+        if ret != 0 {
+            return Err(BackendError::from_io_error(&std::io::Error::last_os_error()));
+        }
+        Ok(())
+    }
+
+    async fn chown(&self, path: &str, uid: u32, gid: u32) -> BackendResult<()> {
+        let full_path = self.resolve_path(path);
+        let c_path = std::ffi::CString::new(full_path.to_string_lossy().as_bytes())
+            .map_err(|_| BackendError::new(libc::EINVAL, "Invalid path"))?;
+        let ret = unsafe { libc::lchown(c_path.as_ptr(), uid, gid) };
+        if ret != 0 {
+            return Err(BackendError::from_io_error(&std::io::Error::last_os_error()));
+        }
+        Ok(())
+    }
+
+    async fn utimens(
+        &self,
+        path: &str,
+        atime: (i64, i64),
+        mtime: (i64, i64),
+    ) -> BackendResult<()> {
+        let full_path = self.resolve_path(path);
+        let c_path = std::ffi::CString::new(full_path.to_string_lossy().as_bytes())
+            .map_err(|_| BackendError::new(libc::EINVAL, "Invalid path"))?;
+        let times = [
+            libc::timespec {
+                tv_sec: atime.0,
+                tv_nsec: atime.1,
+            },
+            libc::timespec {
+                tv_sec: mtime.0,
+                tv_nsec: mtime.1,
+            },
+        ];
+        let ret = unsafe {
+            libc::utimensat(
+                libc::AT_FDCWD,
+                c_path.as_ptr(),
+                times.as_ptr(),
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        };
+        if ret != 0 {
+            return Err(BackendError::from_io_error(&std::io::Error::last_os_error()));
+        }
+        Ok(())
+    }
+
+    async fn symlink(&self, target: &str, linkpath: &str) -> BackendResult<()> {
+        let full_linkpath = self.resolve_path(linkpath);
+        std::os::unix::fs::symlink(target, &full_linkpath)
+            .map_err(|e| BackendError::from_io_error(&e))?;
+        Ok(())
+    }
+
+    async fn link(&self, oldpath: &str, newpath: &str) -> BackendResult<()> {
+        let full_old = self.resolve_path(oldpath);
+        let full_new = self.resolve_path(newpath);
+        fs::hard_link(&full_old, &full_new).map_err(|e| BackendError::from_io_error(&e))?;
+        Ok(())
+    }
+
+    async fn unlink(&self, path: &str) -> BackendResult<()> {
+        let full_path = self.resolve_path(path);
+        fs::remove_file(&full_path).map_err(|e| BackendError::from_io_error(&e))?;
+        Ok(())
+    }
+
+    async fn rename(&self, from: &str, to: &str) -> BackendResult<()> {
+        let full_from = self.resolve_path(from);
+        let full_to = self.resolve_path(to);
+        fs::rename(&full_from, &full_to).map_err(|e| BackendError::from_io_error(&e))?;
+        Ok(())
+    }
+
+    async fn setxattr(
+        &self,
+        _path: &str,
+        _name: &str,
+        _value: &[u8],
+        _flags: u32,
+    ) -> BackendResult<()> {
+        Err(BackendError::new(libc::ENOTSUP, "Extended attributes not supported"))
+    }
+
+    async fn removexattr(&self, _path: &str, _name: &str) -> BackendResult<()> {
+        Err(BackendError::new(libc::ENOTSUP, "Extended attributes not supported"))
+    }
+
+    async fn check_access(&self, path: &str, mask: u32) -> BackendResult<()> {
+        let full_path = self.resolve_path(path);
+        let c_path = std::ffi::CString::new(full_path.to_string_lossy().as_bytes())
+            .map_err(|_| BackendError::new(libc::EINVAL, "Invalid path"))?;
+        let ret = unsafe { libc::access(c_path.as_ptr(), mask as libc::c_int) };
+        if ret != 0 {
+            return Err(BackendError::from_io_error(&std::io::Error::last_os_error()));
+        }
+        Ok(())
+    }
+
+    async fn create_upload(&self, path: &str, mode: u32) -> BackendResult<String> {
+        let final_path = self.resolve_path(path);
+        // Fail if the file already exists
+        if final_path.exists() {
+            return Err(BackendError::new(libc::EEXIST, "File already exists"));
+        }
+        let upload_id = uuid::Uuid::new_v4().to_string();
+        let uploads_dir = self.uploads_dir();
+        fs::create_dir_all(&uploads_dir).map_err(|e| BackendError::from_io_error(&e))?;
+        let temp_path = uploads_dir.join(&upload_id);
+        // Create empty temp file
+        fs::File::create(&temp_path).map_err(|e| BackendError::from_io_error(&e))?;
+        let session = UploadSession {
+            upload_id: upload_id.clone(),
+            path: path.to_string(),
+            mode,
+            next_part: 0,
+            created_at: Instant::now(),
+            temp_path,
+        };
+        self.uploads.write().unwrap().insert(upload_id.clone(), session);
+        Ok(upload_id)
+    }
+
+    async fn upload_part(&self, upload_id: &str, part_number: u32, data: &[u8]) -> BackendResult<()> {
+        let temp_path = {
+            let mut uploads = self.uploads.write().unwrap();
+            let session = uploads.get_mut(upload_id)
+                .ok_or_else(|| BackendError::new(libc::ENOENT, "Unknown upload_id"))?;
+            if part_number != session.next_part {
+                return Err(BackendError::new(libc::EINVAL,
+                    format!("Expected part {}, got {}", session.next_part, part_number)));
+            }
+            session.next_part += 1;
+            session.temp_path.clone()
+        };
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(&temp_path)
+            .map_err(|e| BackendError::from_io_error(&e))?;
+        file.write_all(data).map_err(|e| BackendError::from_io_error(&e))?;
+        Ok(())
+    }
+
+    async fn complete_upload(&self, upload_id: &str) -> BackendResult<()> {
+        let session = self.uploads.write().unwrap().remove(upload_id)
+            .ok_or_else(|| BackendError::new(libc::ENOENT, "Unknown upload_id"))?;
+        let final_path = self.resolve_path(&session.path);
+        // Set mode on temp file before rename
+        let c_path = std::ffi::CString::new(session.temp_path.to_string_lossy().as_bytes())
+            .map_err(|_| BackendError::new(libc::EINVAL, "Invalid path"))?;
+        let ret = unsafe { libc::chmod(c_path.as_ptr(), session.mode as libc::mode_t) };
+        if ret != 0 {
+            let _ = fs::remove_file(&session.temp_path);
+            return Err(BackendError::from_io_error(&std::io::Error::last_os_error()));
+        }
+        // Atomic rename
+        fs::rename(&session.temp_path, &final_path)
+            .map_err(|e| BackendError::from_io_error(&e))?;
+        Ok(())
+    }
+
+    async fn abort_upload(&self, upload_id: &str) -> BackendResult<()> {
+        let session = self.uploads.write().unwrap().remove(upload_id)
+            .ok_or_else(|| BackendError::new(libc::ENOENT, "Unknown upload_id"))?;
+        let _ = fs::remove_file(&session.temp_path);
+        Ok(())
     }
 }

@@ -208,6 +208,41 @@ impl TestHarness {
         self.mount_dir.path()
     }
 
+    /// Start the server with --writable flag
+    fn start_server_writable(&mut self) -> Result<(), String> {
+        let server_bin = server_binary();
+        let bind_addr = format!("127.0.0.1:{}", self.port);
+
+        let child = Command::new(&server_bin)
+            .arg("--bind")
+            .arg(&bind_addr)
+            .arg("--export-root")
+            .arg(self.export_path())
+            .arg("--writable")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("Failed to start server: {}", e))?;
+
+        self.server_process = Some(child);
+
+        if !wait_for_server("127.0.0.1", self.port, Duration::from_secs(10)) {
+            if let Some(ref mut proc) = self.server_process {
+                if let Some(stderr) = proc.stderr.take() {
+                    let reader = BufReader::new(stderr);
+                    let lines: Vec<_> = reader.lines().take(10).filter_map(|l| l.ok()).collect();
+                    return Err(format!(
+                        "Server failed to start within timeout. Stderr:\n{}",
+                        lines.join("\n")
+                    ));
+                }
+            }
+            return Err("Server failed to start within timeout".to_string());
+        }
+
+        Ok(())
+    }
+
     /// Start the server
     fn start_server(&mut self) -> Result<(), String> {
         let server_bin = server_binary();
@@ -1461,4 +1496,189 @@ fn test_http_v8_read_binary_file() {
     let body = response.bytes().expect("Failed to read body");
     let expected: Vec<u8> = (0u8..=255).collect();
     assert_eq!(body.as_ref(), expected.as_slice(), "binary content should match byte-for-byte");
+}
+
+// ============================================================================
+// v8 Upload session tests
+// ============================================================================
+
+/// Helper: parse JSON response body
+fn parse_json_response(resp: reqwest::blocking::Response) -> serde_json::Value {
+    let body = resp.text().expect("Failed to read response body");
+    serde_json::from_str(&body).expect(&format!("Failed to parse JSON: {}", body))
+}
+
+/// Test: Full upload flow: create → upload parts → complete → verify file
+#[test]
+#[ignore = "Requires subprocess spawning without sandbox restrictions"]
+fn test_http_upload_complete_flow() {
+    let mut harness = TestHarness::new();
+    harness.start_server_writable().expect("Failed to start server");
+
+    let client = reqwest::blocking::Client::new();
+    let base = format!("http://127.0.0.1:{}", harness.port);
+
+    // 1. Create upload session (mode 0o644 = 420)
+    let resp = client.get(format!("{}/fs123/8/0/create_upload/uploaded.txt?420", base))
+        .send().expect("create_upload failed");
+    assert_eq!(resp.status(), 200);
+    let json = parse_json_response(resp);
+    assert_eq!(json["errno"], 0);
+    let upload_id = json["upload_id"].as_str().expect("missing upload_id");
+
+    // 2. Upload part 0
+    let resp = client.get(format!("{}/fs123/8/0/upload_part/uploaded.txt?{};0", base, upload_id))
+        .body("Hello, ")
+        .send().expect("upload_part 0 failed");
+    assert_eq!(resp.status(), 200);
+    let json = parse_json_response(resp);
+    assert_eq!(json["errno"], 0);
+
+    // 3. Upload part 1
+    let resp = client.get(format!("{}/fs123/8/0/upload_part/uploaded.txt?{};1", base, upload_id))
+        .body("World!")
+        .send().expect("upload_part 1 failed");
+    assert_eq!(resp.status(), 200);
+    let json = parse_json_response(resp);
+    assert_eq!(json["errno"], 0);
+
+    // 4. File should NOT exist yet (atomic visibility)
+    let file_path = harness.export_path().join("uploaded.txt");
+    assert!(!file_path.exists(), "File should not be visible before complete_upload");
+
+    // 5. Complete upload
+    let resp = client.get(format!("{}/fs123/8/0/complete_upload/uploaded.txt?{}", base, upload_id))
+        .send().expect("complete_upload failed");
+    assert_eq!(resp.status(), 200);
+    let json = parse_json_response(resp);
+    assert_eq!(json["errno"], 0);
+
+    // 6. File should now exist with correct content
+    assert!(file_path.exists(), "File should exist after complete_upload");
+    let content = fs::read_to_string(&file_path).expect("Failed to read uploaded file");
+    assert_eq!(content, "Hello, World!");
+
+    // 7. Verify file mode
+    let meta = fs::metadata(&file_path).expect("Failed to stat uploaded file");
+    assert_eq!(meta.permissions().mode() & 0o777, 0o644);
+}
+
+/// Test: Abort upload cleans up temp file, no file at final path
+#[test]
+#[ignore = "Requires subprocess spawning without sandbox restrictions"]
+fn test_http_upload_abort() {
+    let mut harness = TestHarness::new();
+    harness.start_server_writable().expect("Failed to start server");
+
+    let client = reqwest::blocking::Client::new();
+    let base = format!("http://127.0.0.1:{}", harness.port);
+
+    // Create upload
+    let resp = client.get(format!("{}/fs123/8/0/create_upload/aborted.txt?420", base))
+        .send().expect("create_upload failed");
+    let json = parse_json_response(resp);
+    let upload_id = json["upload_id"].as_str().expect("missing upload_id");
+
+    // Upload a part
+    let resp = client.get(format!("{}/fs123/8/0/upload_part/aborted.txt?{};0", base, upload_id))
+        .body("some data")
+        .send().expect("upload_part failed");
+    assert_eq!(parse_json_response(resp)["errno"], 0);
+
+    // Abort
+    let resp = client.get(format!("{}/fs123/8/0/abort_upload/aborted.txt?{}", base, upload_id))
+        .send().expect("abort_upload failed");
+    assert_eq!(parse_json_response(resp)["errno"], 0);
+
+    // File should not exist
+    assert!(!harness.export_path().join("aborted.txt").exists(),
+        "File should not exist after abort");
+
+    // Temp file should be cleaned up
+    let uploads_dir = harness.export_path().join(".fs123_uploads");
+    if uploads_dir.exists() {
+        let temp_file = uploads_dir.join(upload_id);
+        assert!(!temp_file.exists(), "Temp file should be deleted after abort");
+    }
+}
+
+/// Test: Out-of-order part number is rejected
+#[test]
+#[ignore = "Requires subprocess spawning without sandbox restrictions"]
+fn test_http_upload_out_of_order_part() {
+    let mut harness = TestHarness::new();
+    harness.start_server_writable().expect("Failed to start server");
+
+    let client = reqwest::blocking::Client::new();
+    let base = format!("http://127.0.0.1:{}", harness.port);
+
+    // Create upload
+    let resp = client.get(format!("{}/fs123/8/0/create_upload/ooo.txt?420", base))
+        .send().expect("create_upload failed");
+    let json = parse_json_response(resp);
+    let upload_id = json["upload_id"].as_str().expect("missing upload_id");
+
+    // Try to upload part 1 before part 0 → should fail with EINVAL
+    let resp = client.get(format!("{}/fs123/8/0/upload_part/ooo.txt?{};1", base, upload_id))
+        .body("data")
+        .send().expect("upload_part failed");
+    let json = parse_json_response(resp);
+    assert_eq!(json["errno"], libc::EINVAL, "Out-of-order part should return EINVAL");
+}
+
+/// Test: Unknown upload_id on complete is rejected
+#[test]
+#[ignore = "Requires subprocess spawning without sandbox restrictions"]
+fn test_http_upload_unknown_id() {
+    let mut harness = TestHarness::new();
+    harness.start_server_writable().expect("Failed to start server");
+
+    let client = reqwest::blocking::Client::new();
+    let base = format!("http://127.0.0.1:{}", harness.port);
+
+    // Try to complete a non-existent upload
+    let resp = client.get(format!("{}/fs123/8/0/complete_upload/x.txt?nonexistent-id", base))
+        .send().expect("complete_upload failed");
+    let json = parse_json_response(resp);
+    assert_eq!(json["errno"], libc::ENOENT, "Unknown upload_id should return ENOENT");
+}
+
+/// Test: create_upload fails when file already exists
+#[test]
+#[ignore = "Requires subprocess spawning without sandbox restrictions"]
+fn test_http_upload_file_exists() {
+    let mut harness = TestHarness::new();
+    // Create existing file
+    fs::write(harness.export_path().join("existing.txt"), b"already here").unwrap();
+    harness.start_server_writable().expect("Failed to start server");
+
+    let client = reqwest::blocking::Client::new();
+    let base = format!("http://127.0.0.1:{}", harness.port);
+
+    let resp = client.get(format!("{}/fs123/8/0/create_upload/existing.txt?420", base))
+        .send().expect("create_upload failed");
+    let json = parse_json_response(resp);
+    assert_eq!(json["errno"], libc::EEXIST, "Should return EEXIST for existing file");
+}
+
+/// Test: Upload without --writable returns EROFS
+#[test]
+#[ignore = "Requires subprocess spawning without sandbox restrictions"]
+fn test_http_upload_readonly_server() {
+    let mut harness = TestHarness::new();
+    harness.start_server().expect("Failed to start server"); // no --writable
+
+    let client = reqwest::blocking::Client::new();
+    let base = format!("http://127.0.0.1:{}", harness.port);
+
+    let resp = client.get(format!("{}/fs123/8/0/create_upload/file.txt?420", base))
+        .send().expect("create_upload failed");
+    // The server returns netstring response with errno=EROFS (not JSON) since
+    // get_writable_backend returns an EROFS netstring response.
+    // Just check it's not errno=0
+    let body = resp.bytes().expect("read body");
+    let body_str = String::from_utf8_lossy(&body);
+    // Should contain EROFS errno (30 on macOS, could differ)
+    assert!(!body_str.contains("\"errno\": 0") && !body_str.contains("\"errno\":0"),
+        "Should not succeed on read-only server");
 }

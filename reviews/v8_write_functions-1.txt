@@ -1,0 +1,88 @@
+❯ Review the changes in this branch with a skeptical eye. Are there any things that could be improved about the design? Are there rough edges that will cause problems. For example, the write_once model is
+  going to a lot of trouble to avoid maintaining server state. Is it worth it to break POSIX semantics for writes? I guess the idea is that some backends like S3 are not POSIX-compliant, so write-once is
+  the least common denominator
+
+⏺ Bash(git log master..HEAD --oneline)
+  ⎿  bf09849 feat: write_once functions
+     b299360 feat: writable filesystems (metadata functions only)
+     83c1ad1 Merge pull request #1 from mheily/feat/v8_endpoints
+     … +19 lines (ctrl+o to expand)
+
+⏺ Bash(git diff master..HEAD --stat)
+  ⎿   .dockerignore                                      |     3 +
+      .gitattributes                                     |     2 -
+      .gitignore                                         |    36 +-
+     … +108 lines (ctrl+o to expand)
+
+⏺ Bash(git diff master..HEAD -- crates/fs123-server/src/backends/traits.rs crates/fs123-server/src/handlers.rs crates/fs123-server/src/backends/types.rs)
+  ⎿  diff --git a/crates/fs123-server/src/backends/traits.rs b/crates/fs123-server/src/backends/traits.rs
+     new file mode 100644
+     index 0000000..4bdac83
+     … +150 lines (ctrl+o to expand)
+
+⏺ Bash(git log bf09849 -1 --format="%H" && git diff bf09849^..bf09849 --stat)
+  ⎿  bf09849e9169445404e42f73af1464ec438614bf
+      crates/fs123-core/src/protocol.rs          |  13 +-
+      crates/fs123-server/src/backends/file.rs   | 200 ++++++++++++++++++++++++++++-
+     … +5 lines (ctrl+o to expand)
+
+⏺ Bash(git diff bf09849^..bf09849)
+  ⎿  diff --git a/crates/fs123-core/src/protocol.rs b/crates/fs123-core/src/protocol.rs
+     index f9e19ba..9f8f562 100644
+     --- a/crates/fs123-core/src/protocol.rs
+     … +77 lines (ctrl+o to expand)
+
+⏺ Now let me also look at the previous commit (metadata write functions) for full context.
+
+⏺ Bash(git diff b299360^..b299360 --stat)
+  ⎿   crates/fs123-core/src/protocol.rs                |  41 ++++
+      crates/fs123-server/src/backends/database/mod.rs |   5 +-
+      crates/fs123-server/src/backends/file.rs         | 130 +++++++++++-
+     … +7 lines (ctrl+o to expand)
+
+⏺ Here's my review with a skeptical eye:
+
+  Design Review: Write-Once Model
+
+  The Core Tradeoff — Is It Worth It?
+
+  You're right that the write-once model targets the LCD of backends like S3. But this creates an awkward impedance mismatch:
+
+  1. Clients expect POSIX write(2) semantics (random access, overwrite, seek). The FUSE client will need to buffer entire files locally and translate to open_write/write_data/close_write — essentially
+  reimplementing what the kernel already does. This is a lot of complexity to push onto clients.
+  2. FileBackend already has POSIX. You're deliberately degrading a capable backend to match S3's limitations. An alternative: let backends declare their capabilities (random write vs. append-only vs.
+  write-once) and let the protocol adapt.
+
+  Concrete Problems
+
+  No crash recovery / session cleanup. If a client crashes between open_write and close_write, the xattr stays forever and the partial file is orphaned. There's no timeout, no session ID, no server-side reaper.
+   This will accumulate garbage over time.
+
+  Xattr as lock is fragile. The user.fs123.write_session_active xattr is a boolean — it doesn't identify who holds the session. Two clients could race: client A opens, client B's write_data succeeds because the
+   xattr is "true" regardless of who set it. You need a session token (UUID) returned by open_write and required on subsequent calls.
+
+  No atomicity on visibility. The plan says "files opened for writing are not visible to others until after close()" but the implementation creates the file immediately with create_new(true). Other clients can
+  stat and even read the partial file. To actually hide it, you'd need to write to a temp file and rename on close (which is what S3 multipart upload effectively does).
+
+  write_data uses append mode but doesn't validate ordering. If two HTTP requests arrive out of order (network reordering), data gets silently corrupted. There's no sequence number or offset verification.
+
+  The xattr helpers are ~150 lines of raw libc FFI. Use the xattr crate instead. The manual CString + platform-specific #[cfg] code is exactly the kind of thing that has subtle bugs (e.g., the to_string_lossy()
+   call silently corrupts non-UTF-8 paths).
+
+  HTTP GET for writes is wrong. The handle_request dispatcher uses GET routing for everything. write_data passes a body, but GET requests with bodies are semantically incorrect per HTTP. Write operations should
+   use POST/PUT. This matters for proxies, caches, and load balancers that may strip or reject GET bodies.
+
+  body: web::Bytes is now extracted for every request, including reads. This adds overhead for the read-heavy common case. The body extraction should only happen for write endpoints.
+
+  Smaller Issues
+
+  - open_write does chmod via raw libc instead of std::fs::set_permissions
+  - No tests for any of the write-once operations
+  - The mode parameter is passed as a query string but there's no validation that it's a valid Unix permission mask
+  - DatabaseBackend doesn't implement WritableBackend at all — the write functions all return ENOSYS from default impls, which is fine, but should be documented
+
+  Suggestion
+
+  If the goal is S3-compatibility, consider modeling this more explicitly as a multipart upload pattern with server-generated upload IDs, rather than trying to map POSIX-like open/write/close onto HTTP GETs
+  with xattr-based state. That would naturally solve the session identity, crash recovery, and visibility problems.
+

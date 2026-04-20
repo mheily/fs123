@@ -1,7 +1,7 @@
-/// Backend trait definition
+/// Backend trait definitions
 
 use async_trait::async_trait;
-use super::types::{AttributeInfo, BackendResult, DirectoryListing, FileContent, StatfsInfo};
+use super::types::{AttributeInfo, BackendError, BackendResult, DirectoryListing, FileContent, StatfsInfo};
 
 /// Backend trait for abstracting filesystem operations
 ///
@@ -53,4 +53,90 @@ pub trait Backend: Send + Sync {
     ///
     /// Used for logging and the /n stats endpoint.
     fn describe(&self) -> String;
+}
+
+/// Trait for backends that support write operations (v8 protocol).
+///
+/// All methods have default implementations returning ENOSYS.
+/// Backends that support writing should override the relevant methods.
+#[async_trait]
+pub trait WritableBackend: Send + Sync {
+    async fn mkdir(&self, _path: &str, _mode: u32) -> BackendResult<()> {
+        Err(BackendError::new(libc::ENOSYS, "Not implemented"))
+    }
+
+    async fn rmdir(&self, _path: &str) -> BackendResult<()> {
+        Err(BackendError::new(libc::ENOSYS, "Not implemented"))
+    }
+
+    async fn chmod(&self, _path: &str, _mode: u32) -> BackendResult<()> {
+        Err(BackendError::new(libc::ENOSYS, "Not implemented"))
+    }
+
+    async fn chown(&self, _path: &str, _uid: u32, _gid: u32) -> BackendResult<()> {
+        Err(BackendError::new(libc::ENOSYS, "Not implemented"))
+    }
+
+    async fn utimens(
+        &self,
+        _path: &str,
+        _atime: (i64, i64),
+        _mtime: (i64, i64),
+    ) -> BackendResult<()> {
+        Err(BackendError::new(libc::ENOSYS, "Not implemented"))
+    }
+
+    async fn symlink(&self, _target: &str, _linkpath: &str) -> BackendResult<()> {
+        Err(BackendError::new(libc::ENOSYS, "Not implemented"))
+    }
+
+    async fn link(&self, _oldpath: &str, _newpath: &str) -> BackendResult<()> {
+        Err(BackendError::new(libc::ENOSYS, "Not implemented"))
+    }
+
+    async fn unlink(&self, _path: &str) -> BackendResult<()> {
+        Err(BackendError::new(libc::ENOSYS, "Not implemented"))
+    }
+
+    async fn rename(&self, _from: &str, _to: &str) -> BackendResult<()> {
+        Err(BackendError::new(libc::ENOSYS, "Not implemented"))
+    }
+
+    async fn setxattr(
+        &self,
+        _path: &str,
+        _name: &str,
+        _value: &[u8],
+        _flags: u32,
+    ) -> BackendResult<()> {
+        Err(BackendError::new(libc::ENOSYS, "Not implemented"))
+    }
+
+    async fn removexattr(&self, _path: &str, _name: &str) -> BackendResult<()> {
+        Err(BackendError::new(libc::ENOSYS, "Not implemented"))
+    }
+
+    async fn check_access(&self, _path: &str, _mask: u32) -> BackendResult<()> {
+        Err(BackendError::new(libc::ENOSYS, "Not implemented"))
+    }
+
+    /// Create an upload session. Returns the upload_id (UUID).
+    async fn create_upload(&self, _path: &str, _mode: u32) -> BackendResult<String> {
+        Err(BackendError::new(libc::ENOSYS, "Not implemented"))
+    }
+
+    /// Upload a numbered part to an existing session. Parts must be sequential starting at 0.
+    async fn upload_part(&self, _upload_id: &str, _part_number: u32, _data: &[u8]) -> BackendResult<()> {
+        Err(BackendError::new(libc::ENOSYS, "Not implemented"))
+    }
+
+    /// Complete an upload session, atomically renaming the temp file to the final path.
+    async fn complete_upload(&self, _upload_id: &str) -> BackendResult<()> {
+        Err(BackendError::new(libc::ENOSYS, "Not implemented"))
+    }
+
+    /// Abort an upload session, deleting the temp file.
+    async fn abort_upload(&self, _upload_id: &str) -> BackendResult<()> {
+        Err(BackendError::new(libc::ENOSYS, "Not implemented"))
+    }
 }

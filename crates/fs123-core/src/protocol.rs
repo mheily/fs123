@@ -33,6 +33,24 @@ pub enum Fs123Function {
     Listxattr,
     ServerStats,
     Passthrough,
+    // v8 write operations
+    Mkdir,
+    Rmdir,
+    Chmod,
+    Chown,
+    Utimens,
+    Symlink,
+    Link,
+    Unlink,
+    Rename,
+    Setxattr,
+    Removexattr,
+    Access,
+    // v8 upload session operations
+    CreateUpload,
+    UploadPart,
+    CompleteUpload,
+    AbortUpload,
 }
 
 impl Fs123Function {
@@ -52,6 +70,22 @@ impl Fs123Function {
             "listxattr" => Some(Self::Listxattr),
             "n" => Some(Self::ServerStats),
             "p" => Some(Self::Passthrough),
+            "mkdir" => Some(Self::Mkdir),
+            "rmdir" => Some(Self::Rmdir),
+            "chmod" => Some(Self::Chmod),
+            "chown" => Some(Self::Chown),
+            "utimens" => Some(Self::Utimens),
+            "symlink" => Some(Self::Symlink),
+            "link" => Some(Self::Link),
+            "unlink" => Some(Self::Unlink),
+            "rename" => Some(Self::Rename),
+            "setxattr" => Some(Self::Setxattr),
+            "removexattr" => Some(Self::Removexattr),
+            "access" => Some(Self::Access),
+            "create_upload" => Some(Self::CreateUpload),
+            "upload_part" => Some(Self::UploadPart),
+            "complete_upload" => Some(Self::CompleteUpload),
+            "abort_upload" => Some(Self::AbortUpload),
             _ => None,
         }
     }
@@ -72,6 +106,22 @@ impl Fs123Function {
                 Self::Listxattr => "listxattr",
                 Self::ServerStats => "n",
                 Self::Passthrough => "p",
+                Self::Mkdir => "mkdir",
+                Self::Rmdir => "rmdir",
+                Self::Chmod => "chmod",
+                Self::Chown => "chown",
+                Self::Utimens => "utimens",
+                Self::Symlink => "symlink",
+                Self::Link => "link",
+                Self::Unlink => "unlink",
+                Self::Rename => "rename",
+                Self::Setxattr => "setxattr",
+                Self::Removexattr => "removexattr",
+                Self::Access => "access",
+                Self::CreateUpload => "create_upload",
+                Self::UploadPart => "upload_part",
+                Self::CompleteUpload => "complete_upload",
+                Self::AbortUpload => "abort_upload",
             }
         } else {
             match self {
@@ -83,6 +133,11 @@ impl Fs123Function {
                 Self::Xattr | Self::Getxattr | Self::Listxattr => "x",
                 Self::ServerStats => "n",
                 Self::Passthrough => "p",
+                // Write operations are v8-only; no v7 mapping exists
+                Self::Mkdir | Self::Rmdir | Self::Chmod | Self::Chown |
+                Self::Utimens | Self::Symlink | Self::Link | Self::Unlink |
+                Self::Rename | Self::Setxattr | Self::Removexattr | Self::Access |
+                Self::CreateUpload | Self::UploadPart | Self::CompleteUpload | Self::AbortUpload => "p",
             }
         }
     }

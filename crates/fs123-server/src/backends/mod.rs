@@ -12,10 +12,10 @@ mod types;
 #[cfg(feature = "database")]
 pub use database::DatabaseBackend;
 pub use file::{EstaleCookieSource, FileBackend};
-pub use traits::Backend;
+pub use traits::{Backend, WritableBackend};
 pub use types::{
     AttributeInfo, BackendError, BackendResult, DirEntry, DirectoryListing, FileContent,
-    StatfsInfo,
+    StatfsInfo, UploadSession,
 };
 
 use std::path::PathBuf;
@@ -106,6 +106,25 @@ pub async fn create_backend(url: &Url) -> Result<Arc<dyn Backend>, String> {
         ),
 
         scheme => Err(format!("Unsupported backend scheme: {}", scheme)),
+    }
+}
+
+/// Create a writable backend from a parsed URL
+pub async fn create_writable_backend(url: &Url) -> Result<Arc<dyn WritableBackend>, String> {
+    let mut estalecookie_src = EstaleCookieSource::GetVersionIoctl;
+    for (key, value) in url.query_pairs() {
+        if key == "estalecookie" {
+            estalecookie_src = parse_estale_cookie_source(value.as_ref())?;
+        }
+    }
+
+    match url.scheme() {
+        "file" => {
+            let path_buf = PathBuf::from(url.path());
+            let backend = FileBackend::with_estale_strategy(path_buf, estalecookie_src);
+            Ok(Arc::new(backend))
+        }
+        scheme => Err(format!("Writable backend not supported for scheme: {}", scheme)),
     }
 }
 
